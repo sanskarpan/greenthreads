@@ -1,0 +1,9 @@
+.git
+.github
+bin
+coverage.out
+examples
+docs
+scripts
+*.md
+*.log
