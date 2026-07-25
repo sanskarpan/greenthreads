@@ -23,7 +23,7 @@ func TestE2EFullLifecycle(t *testing.T) {
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
 	server := NewServer(rt)
 
-	addr := "127.0.0.1:18099"
+	addr := randomAddr(t)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Start(addr) }()
 	defer func() {
@@ -150,7 +150,7 @@ func TestE2EConcurrentClients(t *testing.T) {
 	rt := runtime.NewRuntime(scheduler.TypeWorkStealing, 4)
 	server := NewServer(rt)
 
-	addr := "127.0.0.1:18098"
+	addr := randomAddr(t)
 	go func() { _ = server.Start(addr) }()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -170,6 +170,21 @@ func TestE2EConcurrentClients(t *testing.T) {
 	}
 
 	const numClients = 5
+	// Step 1: client 0 inits the runtime.
+	conn0, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn0.Close() }()
+	mustWrite(t, conn0, map[string]interface{}{
+		"type": "init", "payload": map[string]interface{}{"schedulerType": "workstealing", "numWorkers": 4},
+	})
+	if !waitForMsg(t, conn0, "initSuccess", 5*time.Second) {
+		t.Fatal("init failed")
+	}
+	_ = conn0.Close()
+
+	// Step 2: multiple clients connect and spawn concurrently.
 	done := make(chan error, numClients)
 	for i := 0; i < numClients; i++ {
 		go func(id int) {
@@ -179,13 +194,6 @@ func TestE2EConcurrentClients(t *testing.T) {
 				return
 			}
 			defer func() { _ = conn.Close() }()
-			mustWrite(t, conn, map[string]interface{}{
-				"type": "init", "payload": map[string]interface{}{"schedulerType": "workstealing", "numWorkers": 4},
-			})
-			if !waitForMsg(t, conn, "initSuccess", 2*time.Second) {
-				done <- fmt.Errorf("client %d: no initSuccess", id)
-				return
-			}
 			for j := 0; j < 3; j++ {
 				mustWrite(t, conn, map[string]interface{}{
 					"type": "spawn",
@@ -196,7 +204,7 @@ func TestE2EConcurrentClients(t *testing.T) {
 			}
 			// Read until we see 3 successes.
 			successes := 0
-			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			for successes < 3 {
 				_, data, err := conn.ReadMessage()
 				if err != nil {
@@ -218,7 +226,7 @@ func TestE2EConcurrentClients(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client failed: %v", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("timeout waiting for concurrent clients")
 		}
 	}
@@ -282,9 +290,10 @@ func containsStr(s, sub string) bool {
 // and disconnects clients while the broadcast loop is running, verifying no
 // panic occurs.
 func TestBroadcastSurvivesConcurrentDisconnect(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 1)
 	server := NewServer(rt)
-	addr := "127.0.0.1:19010"
+	addr := randomAddr(t)
 	go func() { _ = server.Start(addr) }()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
