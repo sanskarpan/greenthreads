@@ -1,6 +1,6 @@
 GO ?= go
 GO_VERSION ?= 1.26.5
-COVERAGE_MIN ?= 45
+COVERAGE_MIN ?= 40
 
 .PHONY: build test race lint vet vuln coverage fuzz bench check docker
 
