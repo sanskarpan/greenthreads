@@ -205,15 +205,21 @@ func (s *WorkStealingScheduler) Size() int {
 	return total
 }
 
-// GetRunQueue returns all fibers across all queues
+// GetRunQueue returns a best-effort atomic snapshot of every fiber across the
+// global queue and all worker queues. The global RLock is held while iterating
+// worker queues so a fiber cannot migrate from global to a worker (or back)
+// between the two phases. Worker-to-worker steal migrations can still produce
+// a fiber that appears in two queues or none, but this has no correctness
+// impact for the visualizer (it is a one-frame glitch in the browser).
 func (s *WorkStealingScheduler) GetRunQueue() []*fiber.Fiber {
 	fibers := make([]*fiber.Fiber, 0)
 
 	s.globalMu.RLock()
+	defer s.globalMu.RUnlock()
+
 	for _, f := range s.globalQueue {
 		fibers = append(fibers, f.Clone())
 	}
-	s.globalMu.RUnlock()
 
 	for _, worker := range s.workers {
 		worker.mu.Lock()
@@ -248,6 +254,44 @@ func (s *WorkStealingScheduler) GetStealStats() (attempts, successes int64) {
 	defer s.mu.RUnlock()
 
 	return s.stealAttempts, s.stealSuccess
+}
+
+// MarkCompleted records a completion and removes the fiber from the
+// worker's local queue that currently holds it. It is idempotent so the
+// runtime can call it after a fiber terminates and the filter path can
+// also call it without double-counting.
+func (s *WorkStealingScheduler) MarkCompleted(fiberID fiber.FiberID) {
+	s.mu.Lock()
+	if _, seen := s.completed[fiberID]; seen {
+		s.mu.Unlock()
+		return
+	}
+	s.completed[fiberID] = struct{}{}
+	s.totalCompleted++
+	s.mu.Unlock()
+
+	// Search worker local queues under each worker's lock. The worker
+	// locks are not held under s.mu, so this is a safe nesting order.
+	for _, w := range s.workers {
+		w.mu.Lock()
+		filtered := w.localQueue[:0]
+		for _, f := range w.localQueue {
+			if f.ID != fiberID {
+				filtered = append(filtered, f)
+			}
+		}
+		w.localQueue = filtered
+		w.mu.Unlock()
+	}
+	s.globalMu.Lock()
+	filtered := s.globalQueue[:0]
+	for _, f := range s.globalQueue {
+		if f.ID != fiberID {
+			filtered = append(filtered, f)
+		}
+	}
+	s.globalQueue = filtered
+	s.globalMu.Unlock()
 }
 
 // filterFinished removes finished fibers from the queue

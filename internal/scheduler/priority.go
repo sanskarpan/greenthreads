@@ -62,6 +62,28 @@ func (s *PriorityScheduler) Next() (*fiber.Fiber, error) {
 	return f, nil
 }
 
+// MarkCompleted records a completion and removes the fiber from the
+// priority queue. It is idempotent (a fiber already completed is not
+// counted twice) and overrides the BaseScheduler default so the priority
+// heap, not the base run queue, is consulted.
+func (s *PriorityScheduler) MarkCompleted(fiberID fiber.FiberID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, seen := s.completed[fiberID]; seen {
+		return
+	}
+	s.completed[fiberID] = struct{}{}
+	s.totalCompleted++
+	filtered := (*s.pqueue)[:0]
+	for _, f := range *s.pqueue {
+		if f.ID != fiberID {
+			filtered = append(filtered, f)
+		}
+	}
+	*s.pqueue = filtered
+	heap.Init(s.pqueue)
+}
+
 // Size returns the number of fibers in the scheduler
 func (s *PriorityScheduler) Size() int {
 	s.mu.RLock()
@@ -95,6 +117,23 @@ func (s *PriorityScheduler) UpdatePriority(id fiber.FiberID, priority int) error
 		}
 	}
 	return fmt.Errorf("fiber %d not in priority queue", id)
+}
+
+// Reheapify rebuilds the heap after an external SetPriority on a fiber that
+// is currently queued. Callers that have direct access to a queued fiber
+// (which is rare: the runtime hides live fibers behind GetFiber) should
+// invoke this after SetPriority to keep the heap consistent. It returns
+// false if the fiber is not in the heap.
+func (s *PriorityScheduler) Reheapify(id fiber.FiberID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range *s.pqueue {
+		if f.ID == id {
+			heap.Init(s.pqueue)
+			return true
+		}
+	}
+	return false
 }
 
 // GetRunQueue returns all fibers in priority order
