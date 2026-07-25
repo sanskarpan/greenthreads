@@ -13,9 +13,14 @@ import (
 type SchedulerType int
 
 const (
+	// TypeFIFO schedules fibers in first-in-first-out order.
 	TypeFIFO SchedulerType = iota
+	// TypeRoundRobin schedules fibers with a fixed time quantum per dispatch.
 	TypeRoundRobin
+	// TypePriority schedules fibers by priority value (higher first).
 	TypePriority
+	// TypeWorkStealing distributes fibers across worker-local queues with
+	// idle-worker steal.
 	TypeWorkStealing
 )
 
@@ -104,6 +109,12 @@ type BaseScheduler struct {
 	running       bool
 	mu            sync.RWMutex
 
+	// completed tracks which fiber IDs have already been recorded as
+	// completed. It is the basis for MarkCompleted idempotence so the
+	// runtime and the filter path can both call MarkCompleted for the same
+	// fiber without double-counting.
+	completed map[fiber.FiberID]struct{}
+
 	// Statistics
 	totalScheduled   int64
 	totalCompleted   int64
@@ -119,6 +130,7 @@ func NewBaseScheduler(name string, schedulerType SchedulerType) *BaseScheduler {
 		schedulerType: schedulerType,
 		runQueue:      make([]*fiber.Fiber, 0),
 		blockedQueue:  make([]*fiber.Fiber, 0),
+		completed:     make(map[fiber.FiberID]struct{}),
 		running:       false,
 	}
 }
@@ -241,6 +253,7 @@ func (s *BaseScheduler) Clear() {
 	defer s.mu.Unlock()
 	s.runQueue = make([]*fiber.Fiber, 0)
 	s.blockedQueue = make([]*fiber.Fiber, 0)
+	s.completed = make(map[fiber.FiberID]struct{})
 	s.totalScheduled = 0
 	s.totalCompleted = 0
 	s.totalBlocked = 0
@@ -310,11 +323,18 @@ func (s *BaseScheduler) UnblockFiber(fiberID fiber.FiberID) error {
 	return fmt.Errorf("fiber %d not found in blocked queue", fiberID)
 }
 
-// MarkCompleted marks a fiber as completed
+// MarkCompleted marks a fiber as completed. It is idempotent: a fiber that
+// is not in any queue is still recorded once via totalCompleted, but a fiber
+// that has already been marked completed is not recorded a second time.
+// Idempotence matters because callers (the runtime, the filter path) may
+// legitimately call MarkCompleted more than once for the same fiber.
 func (s *BaseScheduler) MarkCompleted(fiberID fiber.FiberID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	if _, seen := s.completed[fiberID]; seen {
+		return
+	}
+	s.completed[fiberID] = struct{}{}
 	s.totalCompleted++
 	_ = s.removeLocked(fiberID)
 }
