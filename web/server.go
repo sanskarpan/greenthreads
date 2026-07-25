@@ -11,12 +11,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"runtime/debug"
 
 	"github.com/gorilla/websocket"
 	"github.com/sanskar/greenthreads/internal/metrics"
@@ -51,6 +54,10 @@ type ServerConfig struct {
 	MaxFibersPerRuntime int64
 	PingInterval        time.Duration
 	ReadIdleTimeout     time.Duration
+	// StopTimeout caps how long runtime Stop is allowed to block the control
+	// plane while waiting for in-flight fibers to drain. A fiber that never
+	// returns must not freeze the WebSocket handler that triggered it.
+	StopTimeout time.Duration
 	// AllowTokenInQuery permits the auth token via ?token= in the URL. Browser
 	// WebSocket clients cannot set Authorization headers, so this is the only
 	// way for a same-origin browser UI to authenticate. The token then leaks
@@ -70,6 +77,7 @@ func defaultConfig() ServerConfig {
 		MaxFibersPerRuntime: defaultMaxFibersPerRuntime,
 		PingInterval:        defaultPingInterval,
 		ReadIdleTimeout:     defaultReadIdleTimeout,
+		StopTimeout:         5 * time.Second,
 		AllowTokenInQuery:   true,
 	}
 }
@@ -154,6 +162,9 @@ func NewServerWithConfig(rt *runtime.Runtime, config ServerConfig) *Server {
 	if config.ReadIdleTimeout <= 0 {
 		config.ReadIdleTimeout = defaultReadIdleTimeout
 	}
+	if config.StopTimeout <= 0 {
+		config.StopTimeout = 5 * time.Second
+	}
 	return &Server{
 		runtime: rt,
 		clients: make(map[*websocket.Conn]*client),
@@ -170,10 +181,14 @@ func NewServerWithConfig(rt *runtime.Runtime, config ServerConfig) *Server {
 // checks at their handlers.
 func (s *Server) Handler() http.Handler {
 	staticRoot, err := fs.Sub(embeddedStatic, "static")
+	var staticHandler http.Handler
 	if err != nil {
-		panic("embedded static files unavailable")
+		staticHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+	} else {
+		staticHandler = noCache(http.FileServer(http.FS(staticRoot)))
 	}
-	staticHandler := http.FileServer(http.FS(staticRoot))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -183,12 +198,23 @@ func (s *Server) Handler() http.Handler {
 	return securityHeaders(requestID(mux))
 }
 
+// noCache sets Cache-Control: no-store on every response so browser clients
+// always see the latest visualization assets. Without it, http.FileServer
+// emits no cache directives and the browser may cache app.js indefinitely,
+// making future visualization fixes invisible without a hard reload.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Start serves until Shutdown or a listener error.
 func (s *Server) Start(addr string) error {
 	if strings.TrimSpace(addr) == "" {
 		return fmt.Errorf("listen address must not be empty")
 	}
-	if !isLoopbackAddress(addr) && s.config.AuthToken == "" {
+	if !IsLoopbackAddress(addr) && s.config.AuthToken == "" {
 		return fmt.Errorf("GREENTHREADS_AUTH_TOKEN is required for non-loopback listeners")
 	}
 	s.serverMu.Lock()
@@ -208,7 +234,7 @@ func (s *Server) Start(addr string) error {
 	httpServer := s.httpServer
 	s.broadcastWG.Add(1)
 	s.serverMu.Unlock()
-	go s.broadcastLoop()
+	go s.broadcastLoop(s.ctx)
 
 	s.logger.Info("server starting", "addr", addr)
 	err := httpServer.ListenAndServe()
@@ -235,13 +261,11 @@ func IsLoopbackAddress(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// isLoopbackAddress is retained as a thin alias for internal call sites.
-func isLoopbackAddress(addr string) bool { return IsLoopbackAddress(addr) }
-
+	}
 // Shutdown stops HTTP serving, runtime admission, client connections, and
-// the update broadcaster within the supplied context.
+// the update broadcaster within the supplied context. Each phase is bounded
+// by ctx; runtime stop errors do not short-circuit the HTTP/broadcast drain
+// because the listener must be closed even if in-flight fibers were abandoned.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.serverMu.Lock()
 	httpServer := s.httpServer
@@ -256,19 +280,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.runtimeMu.Lock()
 	rt := s.runtime
 	s.runtimeMu.Unlock()
+	var firstErr error
 	if rt != nil {
 		if err := rt.Stop(ctx); err != nil {
-			return err
+			firstErr = err
+			s.logFor(httptestReq()).Warn("runtime stop reported error during shutdown", "error", err)
 		}
 	}
 	if httpServer != nil {
-		if err := httpServer.Shutdown(ctx); err != nil {
-			return err
+		if err := httpServer.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	s.broadcastWG.Wait()
-	return nil
+	return firstErr
 }
+
+// httptestReq returns a synthetic request used only to attach a request ID
+// to shutdown log lines. Shutdown is not request-scoped, but operators need a
+// correlation tag.
+func httptestReq() *http.Request { return httptest.NewRequest(http.MethodGet, "/shutdown", nil) }
 
 type requestIDKey struct{}
 
@@ -408,7 +439,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer s.unregister(cl, conn)
 	defer func() { _ = conn.Close() }()
 
-	go s.writePump(cl)
+	s.serverMu.Lock()
+	ctx := s.ctx
+	s.serverMu.Unlock()
+	go s.writePump(cl, ctx)
 
 	conn.SetReadLimit(s.config.MaxMessageBytes)
 	readTimeout := s.config.ReadIdleTimeout
@@ -444,7 +478,8 @@ type Message struct {
 
 func (s *Server) handleMessage(conn *websocket.Conn, msg Message) {
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
+			s.logger.Error("panic in handleMessage", "panic", r, "stack", string(debug.Stack()))
 			s.sendError(conn, "invalid request")
 		}
 	}()
@@ -485,6 +520,11 @@ func (s *Server) handleInit(conn *websocket.Conn, msg Message) {
 		s.sendError(conn, "failed to start runtime")
 		return
 	}
+	// Take a write lock on the runtime field for the entire swap. Without
+	// this, concurrent handleSpawn calls captured the old runtime just
+	// before the swap and continued to admit fibers into a runtime that
+	// was about to be stopped (the fibers would be queued but never
+	// dispatched; see handleInit M1 in the audit).
 	s.runtimeMu.Lock()
 	old := s.runtime
 	s.runtime = newRuntime
@@ -492,9 +532,11 @@ func (s *Server) handleInit(conn *websocket.Conn, msg Message) {
 	if old != nil {
 		// Bound the old runtime's drain so a stuck fiber in the prior runtime
 		// cannot freeze the re-init handler and this client's connection.
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer stopCancel()
-		_ = old.Stop(stopCtx)
+		stopCtx, stopCancel := s.stopContext()
+		if err := old.Stop(stopCtx); err != nil {
+			s.logFor(httptestReq()).Warn("old runtime did not drain during re-init", "error", err)
+		}
+		stopCancel()
 	}
 	s.sendJSON(conn, map[string]interface{}{
 		"type":    "initSuccess",
@@ -541,16 +583,27 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 		return
 	}
 	// Apply priority through the scheduler-owned API so the priority heap is
-	// re-heapified atomically. Mutating the live fiber's priority directly
-	// (the old path via GetFiberDirect + SetPriority) races with heap
-	// operations and can leave the heap inconsistent.
-	if ps, ok := rt.GetScheduler().(*scheduler.PriorityScheduler); ok {
-		if err := ps.UpdatePriority(fiberID, priority); err != nil {
-			// The fiber may already have been dispatched/finished; not fatal.
-			s.logger.Warn("priority update failed", "fiberId", fiberID, "error", err)
+	// re-heapified atomically. If the fiber has already been dispatched or
+	// completed by the time we get here, the priority update is silently
+	// dropped (the fiber ran at priority 0). We surface that to the operator
+	// via the success payload so the client can decide whether to retry.
+	priorityApplied := true
+	if priority != 0 {
+		if ps, ok := rt.GetScheduler().(*scheduler.PriorityScheduler); ok {
+			if err := ps.UpdatePriority(fiberID, priority); err != nil {
+				priorityApplied = false
+				s.logger.Warn("priority update failed; fiber already dispatched", "fiberId", fiberID, "error", err)
+			}
 		}
 	}
-	s.sendSuccess(conn, map[string]interface{}{"fiberID": fiberID, "name": name})
+	s.sendJSON(conn, map[string]interface{}{
+		"type": "success",
+		"payload": map[string]interface{}{
+			"fiberID":         fiberID,
+			"name":            name,
+			"priorityApplied": priorityApplied,
+		},
+	})
 }
 
 func (s *Server) handleStop(conn *websocket.Conn, _ Message) {
@@ -558,7 +611,12 @@ func (s *Server) handleStop(conn *websocket.Conn, _ Message) {
 	rt := s.runtime
 	s.runtimeMu.RUnlock()
 	if rt != nil {
-		if err := rt.Stop(context.Background()); err != nil {
+		// Bound the drain so a stuck fiber cannot freeze this client's
+		// connection. The control plane must remain responsive even when
+		// user-supplied work hangs.
+		stopCtx, stopCancel := s.stopContext()
+		defer stopCancel()
+		if err := rt.Stop(stopCtx); err != nil {
 			s.sendError(conn, "failed to stop runtime")
 			return
 		}
@@ -571,13 +629,33 @@ func (s *Server) handleReset(conn *websocket.Conn, _ Message) {
 	rt := s.runtime
 	s.runtimeMu.RUnlock()
 	if rt != nil {
-		if err := rt.Stop(context.Background()); err != nil {
+		stopCtx, stopCancel := s.stopContext()
+		defer stopCancel()
+		if err := rt.Stop(stopCtx); err != nil {
 			s.sendError(conn, "failed to stop runtime")
 			return
 		}
 		rt.Reset()
 	}
 	s.sendSuccess(conn, nil)
+}
+
+// stopContext returns a bounded context for runtime Stop operations invoked
+// from control-plane handlers. It is shared so callers can override it in
+// tests; production handlers use a 5 s timeout to keep the control plane
+// responsive even when user-supplied fibers never return.
+func (s *Server) stopContext() (context.Context, context.CancelFunc) {
+	timeout := s.config.StopTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	s.serverMu.Lock()
+	parent := s.ctx
+	s.serverMu.Unlock()
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func (s *Server) handleGetState(conn *websocket.Conn) {
@@ -626,7 +704,7 @@ func (s *Server) sendError(conn *websocket.Conn, message string) {
 // killed by the read deadline. It exits when sendCh closes or the server
 // context is cancelled. A slow client only drops its own updates; it never
 // blocks broadcasts to other clients.
-func (s *Server) writePump(cl *client) {
+func (s *Server) writePump(cl *client, ctx context.Context) {
 	defer close(cl.done)
 	pingInterval := s.config.PingInterval
 	if pingInterval <= 0 {
@@ -634,10 +712,6 @@ func (s *Server) writePump(cl *client) {
 	}
 	pinger := time.NewTicker(pingInterval)
 	defer pinger.Stop()
-	// s.ctx is nil when the server is driven through Handler() (e.g. httptest);
-	// fall back to a context that never cancels so the pump still runs and
-	// exits on write error, stop signal, or server shutdown.
-	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -682,11 +756,8 @@ func (s *Server) sendJSON(conn *websocket.Conn, value interface{}) {
 	s.enqueue(cl, value)
 }
 
-func (s *Server) broadcastLoop() {
+func (s *Server) broadcastLoop(ctx context.Context) {
 	defer s.broadcastWG.Done()
-	s.serverMu.Lock()
-	ctx := s.ctx
-	s.serverMu.Unlock()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -809,8 +880,14 @@ func (s *Server) authorized(r *http.Request) bool {
 
 func (s *Server) allowedOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
+	// An empty Origin is a non-browser client; browsers always send Origin
+	// on WebSocket dials. The default config allows this so programmatic
+	// clients (curl, custom HTTP libraries) work out of the box. Operators
+	// that need to restrict non-browser clients can set a non-empty
+	// AllowedOrigins list, in which case an empty Origin is rejected
+	// because it matches no entry.
 	if origin == "" {
-		return true
+		return len(s.config.AllowedOrigins) == 0
 	}
 	for _, allowed := range s.config.AllowedOrigins {
 		if origin == allowed {
