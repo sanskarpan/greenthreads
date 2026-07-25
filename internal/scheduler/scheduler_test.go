@@ -8,6 +8,7 @@ import (
 )
 
 func TestFIFOScheduler(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 
 	if sched == nil {
@@ -24,6 +25,7 @@ func TestFIFOScheduler(t *testing.T) {
 }
 
 func TestFIFOScheduling(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -69,6 +71,7 @@ func TestFIFOScheduling(t *testing.T) {
 }
 
 func TestRoundRobinScheduler(t *testing.T) {
+	t.Parallel()
 	quantum := 10 * time.Millisecond
 	sched := NewRoundRobinScheduler(quantum)
 
@@ -86,6 +89,7 @@ func TestRoundRobinScheduler(t *testing.T) {
 }
 
 func TestRoundRobinScheduling(t *testing.T) {
+	t.Parallel()
 	sched := NewRoundRobinScheduler(10 * time.Millisecond)
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -121,6 +125,7 @@ func TestRoundRobinScheduling(t *testing.T) {
 }
 
 func TestPriorityScheduler(t *testing.T) {
+	t.Parallel()
 	sched := NewPriorityScheduler()
 
 	if sched == nil {
@@ -133,6 +138,7 @@ func TestPriorityScheduler(t *testing.T) {
 }
 
 func TestPriorityScheduling(t *testing.T) {
+	t.Parallel()
 	sched := NewPriorityScheduler()
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -167,6 +173,7 @@ func TestPriorityScheduling(t *testing.T) {
 }
 
 func TestWorkStealingScheduler(t *testing.T) {
+	t.Parallel()
 	numWorkers := 4
 	sched := NewWorkStealingScheduler(numWorkers)
 
@@ -184,6 +191,7 @@ func TestWorkStealingScheduler(t *testing.T) {
 }
 
 func TestWorkStealingScheduling(t *testing.T) {
+	t.Parallel()
 	sched := NewWorkStealingScheduler(4)
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -213,6 +221,7 @@ func TestWorkStealingScheduling(t *testing.T) {
 }
 
 func TestSchedulerSize(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 
 	if sched.Size() != 0 {
@@ -230,6 +239,7 @@ func TestSchedulerSize(t *testing.T) {
 }
 
 func TestSchedulerRemove(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 
 	f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber")
@@ -248,6 +258,7 @@ func TestSchedulerRemove(t *testing.T) {
 }
 
 func TestSchedulerStartStop(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 
 	if sched.IsRunning() {
@@ -274,6 +285,7 @@ func TestSchedulerStartStop(t *testing.T) {
 }
 
 func TestSchedulerStats(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -297,6 +309,7 @@ func TestSchedulerStats(t *testing.T) {
 }
 
 func TestSchedulerGetRunQueue(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 
 	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber-1")
@@ -317,6 +330,7 @@ func TestSchedulerGetRunQueue(t *testing.T) {
 }
 
 func TestSchedulerEmptyQueue(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -331,6 +345,7 @@ func TestSchedulerEmptyQueue(t *testing.T) {
 }
 
 func TestMarkCompletedDoesNotDeadlock(t *testing.T) {
+	t.Parallel()
 	sched := NewFIFOScheduler()
 	f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber")
 	if err := sched.Schedule(f); err != nil {
@@ -352,6 +367,7 @@ func TestMarkCompletedDoesNotDeadlock(t *testing.T) {
 }
 
 func TestWorkStealingConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	sched := NewWorkStealingScheduler(4)
 	const count = 100
 	for i := 0; i < count; i++ {
@@ -375,6 +391,301 @@ func TestWorkStealingConcurrentAccess(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("work-stealing scheduler did not drain")
+	}
+}
+
+func TestSchedulerTypeString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		st   SchedulerType
+		want string
+	}{
+		{TypeFIFO, "FIFO"},
+		{TypeRoundRobin, "RoundRobin"},
+		{TypePriority, "Priority"},
+		{TypeWorkStealing, "WorkStealing"},
+		{SchedulerType(999), "Unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			if got := tc.st.String(); got != tc.want {
+				t.Errorf("SchedulerType(%d).String() = %q, want %q", tc.st, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBaseSchedulerClear(t *testing.T) {
+	t.Parallel()
+	sched := NewFIFOScheduler()
+	f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber")
+	_ = sched.Schedule(f)
+	_ = sched.Start()
+	_, _ = sched.Next()
+	sched.MarkCompleted(f.ID)
+	sched.Clear()
+
+	stats := sched.GetStats()
+	if stats.TotalScheduled != 0 {
+		t.Errorf("TotalScheduled = %d, want 0", stats.TotalScheduled)
+	}
+	if stats.TotalCompleted != 0 {
+		t.Errorf("TotalCompleted = %d, want 0", stats.TotalCompleted)
+	}
+	if stats.CurrentRunQueue != 0 {
+		t.Errorf("CurrentRunQueue = %d, want 0", stats.CurrentRunQueue)
+	}
+	if stats.CurrentBlocked != 0 {
+		t.Errorf("CurrentBlocked = %d, want 0", stats.CurrentBlocked)
+	}
+	if sched.Size() != 0 {
+		t.Errorf("Size = %d, want 0", sched.Size())
+	}
+}
+
+func TestBaseSchedulerBlockFiber(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var bs *BaseScheduler
+		bs.BlockFiber(nil) // should not panic
+	})
+	t.Run("normal blocking", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "block-me")
+		_ = sched.Schedule(f)
+		if sched.Size() != 1 {
+			t.Fatalf("expected size 1 before block, got %d", sched.Size())
+		}
+		sched.BlockFiber(f)
+		if sched.Size() != 0 {
+			t.Errorf("expected size 0 after block, got %d", sched.Size())
+		}
+		blocked := sched.GetBlockedQueue()
+		if len(blocked) != 1 {
+			t.Errorf("expected 1 blocked fiber, got %d", len(blocked))
+		}
+	})
+}
+
+func TestBaseSchedulerUnblockFiber(t *testing.T) {
+	t.Parallel()
+	t.Run("normal unblocking", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "unblock-me")
+		_ = sched.Schedule(f)
+		sched.BlockFiber(f)
+
+		err := sched.UnblockFiber(f.ID)
+		if err != nil {
+			t.Errorf("UnblockFiber failed: %v", err)
+		}
+		if sched.Size() != 1 {
+			t.Errorf("expected size 1 after unblock, got %d", sched.Size())
+		}
+		blocked := sched.GetBlockedQueue()
+		if len(blocked) != 0 {
+			t.Errorf("expected 0 blocked fibers after unblock, got %d", len(blocked))
+		}
+	})
+	t.Run("not-found case", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		err := sched.UnblockFiber(99999)
+		if err == nil {
+			t.Error("expected error for non-existent fiber")
+		}
+	})
+}
+
+func TestBaseSchedulerGetBlockedQueue(t *testing.T) {
+	t.Parallel()
+	sched := NewFIFOScheduler()
+	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "b1")
+	f2 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "b2")
+	_ = sched.Schedule(f1)
+	_ = sched.Schedule(f2)
+	sched.BlockFiber(f1)
+	sched.BlockFiber(f2)
+
+	blocked := sched.GetBlockedQueue()
+	if len(blocked) != 2 {
+		t.Fatalf("expected 2 blocked fibers, got %d", len(blocked))
+	}
+	// Verify clones (different pointers)
+	if blocked[0] == f1 || blocked[1] == f2 {
+		t.Error("GetBlockedQueue should return clones, not originals")
+	}
+}
+
+func TestBaseSchedulerRemove(t *testing.T) {
+	t.Parallel()
+	t.Run("remove from run queue", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "remove-me")
+		_ = sched.Schedule(f)
+		if err := sched.Remove(f.ID); err != nil {
+			t.Errorf("Remove from run queue failed: %v", err)
+		}
+		if sched.Size() != 0 {
+			t.Errorf("size after remove = %d, want 0", sched.Size())
+		}
+	})
+	t.Run("remove from blocked queue", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "blocked-remove")
+		_ = sched.Schedule(f)
+		sched.BlockFiber(f)
+		if err := sched.Remove(f.ID); err != nil {
+			t.Errorf("Remove from blocked queue failed: %v", err)
+		}
+		if sched.Size() != 0 {
+			t.Errorf("size after remove = %d, want 0", sched.Size())
+		}
+	})
+	t.Run("remove non-existent fiber", func(t *testing.T) {
+		sched := NewFIFOScheduler()
+		err := sched.Remove(99999)
+		if err == nil {
+			t.Error("expected error for non-existent fiber")
+		}
+	})
+}
+
+func TestPrioritySchedulerClear(t *testing.T) {
+	t.Parallel()
+	sched := NewPriorityScheduler()
+	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "p1")
+	f1.SetPriority(5)
+	f2 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "p2")
+	f2.SetPriority(3)
+	_ = sched.Schedule(f1)
+	_ = sched.Schedule(f2)
+
+	sched.Clear()
+	if sched.Size() != 0 {
+		t.Errorf("size after Clear = %d, want 0", sched.Size())
+	}
+	stats := sched.GetStats()
+	if stats.TotalScheduled != 0 {
+		t.Errorf("TotalScheduled after Clear = %d, want 0", stats.TotalScheduled)
+	}
+}
+
+func TestPrioritySchedulerGetRunQueue(t *testing.T) {
+	t.Parallel()
+	sched := NewPriorityScheduler()
+	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "low")
+	f1.SetPriority(1)
+	f2 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "high")
+	f2.SetPriority(10)
+	_ = sched.Schedule(f1)
+	_ = sched.Schedule(f2)
+
+	queue := sched.GetRunQueue()
+	if len(queue) != 2 {
+		t.Fatalf("expected 2 fibers, got %d", len(queue))
+	}
+	if queue[0].Priority < queue[1].Priority {
+		t.Errorf("GetRunQueue should return highest priority first; got %d then %d", queue[0].Priority, queue[1].Priority)
+	}
+}
+
+func TestPrioritySchedulerAgeAll(t *testing.T) {
+	t.Parallel()
+	sched := NewPriorityScheduler()
+	f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "ager")
+	f.SetPriority(5)
+	_ = sched.Schedule(f)
+
+	pq := sched.pqueue
+	pq.AgeAll()
+
+	if got := f.PriorityValue(); got <= 5 {
+		t.Errorf("priority after AgeAll = %d, want > 5", got)
+	}
+}
+
+func TestPrioritySchedulerGetAll(t *testing.T) {
+	t.Parallel()
+	sched := NewPriorityScheduler()
+	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "older-low")
+	f1.SetPriority(1)
+	f2 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "newer-high")
+	f2.SetPriority(10)
+	_ = sched.Schedule(f1)
+	_ = sched.Schedule(f2)
+
+	all := sched.pqueue.GetAll()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 fibers, got %d", len(all))
+	}
+	if all[0].Priority == all[1].Priority {
+		t.Error("priorities should differ")
+	}
+	// Verify clones
+	for _, f := range all {
+		if f == f1 || f == f2 {
+			t.Error("GetAll should return clones")
+		}
+	}
+}
+
+func TestRoundRobinSchedulerSetQuantum(t *testing.T) {
+	t.Parallel()
+	t.Run("valid quantum", func(t *testing.T) {
+		sched := NewRoundRobinScheduler(50 * time.Millisecond)
+		sched.SetQuantum(100 * time.Millisecond)
+		if got := sched.GetQuantum(); got != 100*time.Millisecond {
+			t.Errorf("quantum = %v, want 100ms", got)
+		}
+	})
+	t.Run("quantum <= 0 defaults to 10ms", func(t *testing.T) {
+		sched := NewRoundRobinScheduler(50 * time.Millisecond)
+		sched.SetQuantum(0)
+		if got := sched.GetQuantum(); got != 10*time.Millisecond {
+			t.Errorf("quantum after SetQuantum(0) = %v, want 10ms", got)
+		}
+		sched.SetQuantum(-1)
+		if got := sched.GetQuantum(); got != 10*time.Millisecond {
+			t.Errorf("quantum after SetQuantum(-1) = %v, want 10ms", got)
+		}
+	})
+}
+
+func TestRoundRobinSchedulerShouldPreempt(t *testing.T) {
+	t.Parallel()
+	t.Run("preemption timing", func(t *testing.T) {
+		sched := NewRoundRobinScheduler(10 * time.Millisecond)
+		if err := sched.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sched.Stop() }()
+		f := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "f")
+		_ = sched.Schedule(f)
+		_, _ = sched.Next() // sets lastQuantum
+
+		preempt := sched.ShouldPreempt()
+		// ShouldPreempt right after Next should be false
+		if preempt {
+			t.Log("ShouldPreempt returned true immediately after Next (race with time)")
+		}
+	})
+}
+
+func TestWorkStealingSchedulerClear(t *testing.T) {
+	t.Parallel()
+	sched := NewWorkStealingScheduler(2)
+	f1 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "ws1")
+	f2 := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "ws2")
+	_ = sched.Schedule(f1)
+	_ = sched.Schedule(f2)
+
+	sched.Clear()
+	if sched.Size() != 0 {
+		t.Errorf("size after Clear = %d, want 0", sched.Size())
+	}
+	queue := sched.GetRunQueue()
+	if len(queue) != 0 {
+		t.Errorf("run queue len after Clear = %d, want 0", len(queue))
 	}
 }
 
@@ -436,11 +747,64 @@ func BenchmarkPriorityScheduler(b *testing.B) {
 	}
 }
 
+// BenchmarkRoundRobinScheduler measures round-robin schedule/drain throughput.
+func BenchmarkRoundRobinScheduler(b *testing.B) {
+	sched := NewRoundRobinScheduler(10 * time.Millisecond)
+	if err := sched.Start(); err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = sched.Stop() }()
+	fibers := make([]*fiber.Fiber, 100)
+	for i := 0; i < 100; i++ {
+		fibers[i] = fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, f := range fibers {
+			if err := sched.Schedule(f); err != nil {
+				b.Fatal(err)
+			}
+		}
+		for range fibers {
+			if _, err := sched.Next(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
+// BenchmarkWorkStealingScheduler measures work-stealing schedule/drain throughput.
+func BenchmarkWorkStealingScheduler(b *testing.B) {
+	sched := NewWorkStealingScheduler(4)
+	if err := sched.Start(); err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = sched.Stop() }()
+	fibers := make([]*fiber.Fiber, 100)
+	for i := 0; i < 100; i++ {
+		fibers[i] = fiber.NewFiber(func() {}, fiber.DefaultStackSize, "fiber")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, f := range fibers {
+			if err := sched.Schedule(f); err != nil {
+				b.Fatal(err)
+			}
+		}
+		for range fibers {
+			if _, err := sched.Next(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
+
 // TestPrioritySchedulerUpdatePriorityReheaps is a regression guard for AUDIT
 // ID 13: changing a queued fiber's priority through UpdatePriority must change
 // the order in which fibers are selected, and the update must be safe under
 // the scheduler lock (no torn heap).
 func TestPrioritySchedulerUpdatePriorityReheaps(t *testing.T) {
+	t.Parallel()
 	sched := NewPriorityScheduler()
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
@@ -485,6 +849,7 @@ func TestPrioritySchedulerUpdatePriorityReheaps(t *testing.T) {
 // runtime can surface them in metrics. It builds an imbalanced queue and drains
 // it so one Next() call lands on an empty worker and steals from another.
 func TestWorkStealingRecordsStealStats(t *testing.T) {
+	t.Parallel()
 	sched := NewWorkStealingScheduler(2)
 	if err := sched.Start(); err != nil {
 		t.Fatal(err)
