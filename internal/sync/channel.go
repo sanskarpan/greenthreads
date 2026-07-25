@@ -142,6 +142,7 @@ func (fc *FiberChannel) SendCtx(ctx context.Context, value interface{}, currentF
 		default:
 			fc.removeSenderLocked(waiter)
 			fc.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}
@@ -249,6 +250,7 @@ func (fc *FiberChannel) ReceiveCtx(ctx context.Context, currentFiber *fiber.Fibe
 		default:
 			fc.removeReceiverLocked(waiter)
 			fc.mu.Unlock()
+			currentFiber.Unblock()
 			return nil, ctx.Err()
 		}
 	}

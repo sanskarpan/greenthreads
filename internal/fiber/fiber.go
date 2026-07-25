@@ -17,10 +17,15 @@ type FiberID uint64
 type FiberState int32
 
 const (
+	// StateReady indicates the fiber is eligible for scheduler selection.
 	StateReady FiberState = iota
+	// StateRunning indicates the fiber function is currently executing.
 	StateRunning
+	// StateBlocked indicates the fiber is waiting on a synchronization object.
 	StateBlocked
+	// StateFinished indicates the fiber function has completed execution.
 	StateFinished
+	// StateDead indicates the fiber has been torn down and cannot be rescheduled.
 	StateDead
 )
 
@@ -144,6 +149,9 @@ func (f *Fiber) Run() {
 
 // Failure returns the captured panic as an error, if the fiber failed.
 func (f *Fiber) Failure() error {
+	if f == nil {
+		return nil
+	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.failure
@@ -151,6 +159,9 @@ func (f *Fiber) Failure() error {
 
 // PanicStack returns a copy of the captured panic stack, if any.
 func (f *Fiber) PanicStack() []byte {
+	if f == nil {
+		return nil
+	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return append([]byte(nil), f.panicStack...)
@@ -205,6 +216,10 @@ func (f *Fiber) MarkScheduled() {
 		return
 	}
 	f.mu.Lock()
+	if f.completion {
+		f.mu.Unlock()
+		return
+	}
 	f.State = StateRunning
 	f.LastScheduled = time.Now()
 	f.SwitchCount++

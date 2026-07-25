@@ -83,6 +83,7 @@ func (fm *FiberMutex) LockCtx(ctx context.Context, currentFiber *fiber.Fiber) er
 		default:
 			fm.removeWaiterLocked(waiter)
 			fm.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}
@@ -245,6 +246,7 @@ func (frw *FiberRWMutex) RLockCtx(ctx context.Context, currentFiber *fiber.Fiber
 		default:
 			frw.removeReaderLocked(waiter)
 			frw.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}
@@ -262,7 +264,9 @@ func (frw *FiberRWMutex) removeReaderLocked(waiter *rwWaiter) {
 }
 
 // RUnlock releases one shared read lock and admits the next writer if the
-// final reader has left.
+// final reader has left. When no writer is queued, all pending readers are
+// admitted so a previously-stranded reader (e.g. one that queued behind a
+// writer that was canceled) is released by the final active reader.
 func (frw *FiberRWMutex) RUnlock() {
 	if frw == nil {
 		panic("runlock of nil rwmutex")
@@ -274,7 +278,19 @@ func (frw *FiberRWMutex) RUnlock() {
 	}
 	frw.readers--
 	if frw.readers == 0 {
-		frw.grantWriterLocked()
+		if frw.grantWriterLocked() {
+			return
+		}
+		// No writer is queued; admit any readers that piled up behind a
+		// canceled writer. Without this, a canceled writer can leave
+		// queued readers stranded even after the last active reader
+		// exits.
+		for _, waiter := range frw.readerQueue {
+			frw.readers++
+			waiter.fiber.Unblock()
+			close(waiter.ready)
+		}
+		frw.readerQueue = nil
 	}
 }
 
@@ -332,6 +348,7 @@ func (frw *FiberRWMutex) LockCtx(ctx context.Context, currentFiber *fiber.Fiber)
 		default:
 			frw.removeWriterLocked(waiter)
 			frw.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}
