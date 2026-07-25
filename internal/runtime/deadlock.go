@@ -88,10 +88,23 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 	if rt == nil || !rt.IsRunning() {
 		return
 	}
+	// The observer main fiber is never admitted for execution; it sits in
+	// StateReady for the lifetime of the runtime. If we counted it as
+	// runnable, every runtime would look partially unblocked forever and
+	// no deadlock suspicion would ever fire. Exclude it explicitly.
+	mainID := fiber.FiberID(0)
+	rt.mu.RLock()
+	if rt.mainFiber != nil {
+		mainID = rt.mainFiber.ID
+	}
+	rt.mu.RUnlock()
 	fibers := rt.GetAllFibers()
 	blocked := make([]*fiber.Fiber, 0)
 	runnable := 0
 	for _, f := range fibers {
+		if f.ID == mainID {
+			continue
+		}
 		if f.IsBlocked() {
 			blocked = append(blocked, f)
 		} else if f.IsRunnable() {
