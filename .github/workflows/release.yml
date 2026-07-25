@@ -26,5 +26,5 @@ jobs:
             IFS=. read -r major minor patch <<< "$version"
             next="v${major}.${minor}.$((patch + 1))"
           fi
-          git tag "$next" "$GITHUB_SHA"
+          git tag -a "$next" -m "Release $next" "$GITHUB_SHA"
           git push origin "$next"
