@@ -6,6 +6,7 @@ import (
 )
 
 func TestNewFiber(t *testing.T) {
+	t.Parallel()
 	fn := func() {
 		// Test function
 	}
@@ -34,6 +35,7 @@ func TestNewFiber(t *testing.T) {
 }
 
 func TestFiberRun(t *testing.T) {
+	t.Parallel()
 	executed := false
 	fn := func() {
 		executed = true
@@ -65,6 +67,7 @@ func TestFiberRun(t *testing.T) {
 }
 
 func TestFiberBlock(t *testing.T) {
+	t.Parallel()
 	f := NewFiber(func() {}, DefaultStackSize, "test-block")
 
 	f.Block("test reason", "test-object")
@@ -83,6 +86,7 @@ func TestFiberBlock(t *testing.T) {
 }
 
 func TestFiberUnblock(t *testing.T) {
+	t.Parallel()
 	f := NewFiber(func() {}, DefaultStackSize, "test-unblock")
 
 	f.Block("test", "obj")
@@ -102,6 +106,7 @@ func TestFiberUnblock(t *testing.T) {
 }
 
 func TestFiberIsFinished(t *testing.T) {
+	t.Parallel()
 	f := NewFiber(func() {}, DefaultStackSize, "test-finished")
 
 	if f.IsFinished() {
@@ -122,6 +127,7 @@ func TestFiberIsFinished(t *testing.T) {
 }
 
 func TestFiberIsRunnable(t *testing.T) {
+	t.Parallel()
 	f := NewFiber(func() {}, DefaultStackSize, "test-runnable")
 
 	if !f.IsRunnable() {
@@ -142,6 +148,7 @@ func TestFiberIsRunnable(t *testing.T) {
 }
 
 func TestFiberIsBlocked(t *testing.T) {
+	t.Parallel()
 	f := NewFiber(func() {}, DefaultStackSize, "test-isblocked")
 
 	if f.IsBlocked() {
@@ -156,6 +163,7 @@ func TestFiberIsBlocked(t *testing.T) {
 }
 
 func TestFiberClone(t *testing.T) {
+	t.Parallel()
 	original := NewFiber(func() {}, DefaultStackSize, "test-clone")
 	original.Priority = 5
 	original.ScheduleCount = 10
@@ -190,6 +198,7 @@ func TestFiberClone(t *testing.T) {
 }
 
 func TestFiberAddChild(t *testing.T) {
+	t.Parallel()
 	parent := NewFiber(func() {}, DefaultStackSize, "parent")
 	child := NewFiber(func() {}, DefaultStackSize, "child")
 
@@ -209,6 +218,7 @@ func TestFiberAddChild(t *testing.T) {
 }
 
 func TestFiberPanic(t *testing.T) {
+	t.Parallel()
 	fn := func() {
 		panic("test panic")
 	}
@@ -223,7 +233,186 @@ func TestFiberPanic(t *testing.T) {
 	}
 }
 
+func TestFiberStateString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		state FiberState
+		want  string
+	}{
+		{StateReady, "Ready"},
+		{StateRunning, "Running"},
+		{StateBlocked, "Blocked"},
+		{StateFinished, "Finished"},
+		{StateDead, "Dead"},
+		{FiberState(999), "Unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			if got := tc.state.String(); got != tc.want {
+				t.Errorf("FiberState(%d).String() = %q, want %q", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFiberFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var f *Fiber
+		if err := f.Failure(); err != nil {
+			t.Errorf("nil fiber Failure() should return nil, got %v", err)
+		}
+	})
+	t.Run("fiber with panic", func(t *testing.T) {
+		f := NewFiber(func() { panic("boom") }, DefaultStackSize, "panic-fiber")
+		f.Run()
+		if err := f.Failure(); err == nil {
+			t.Error("expected non-nil error from panicked fiber")
+		} else if err.Error() == "" {
+			t.Error("error message should not be empty")
+		}
+	})
+	t.Run("normal fiber has no failure", func(t *testing.T) {
+		f := NewFiber(func() {}, DefaultStackSize, "ok-fiber")
+		f.Run()
+		if err := f.Failure(); err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+	})
+}
+
+func TestFiberPanicStack(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var f *Fiber
+		if stack := f.PanicStack(); stack != nil {
+			t.Errorf("nil fiber PanicStack() should return nil, got %v", stack)
+		}
+	})
+	t.Run("fiber with panic has stack", func(t *testing.T) {
+		f := NewFiber(func() { panic("boom") }, DefaultStackSize, "panic-fiber")
+		f.Run()
+		if stack := f.PanicStack(); len(stack) == 0 {
+			t.Error("expected non-empty panic stack from panicked fiber")
+		}
+	})
+	t.Run("normal fiber has no panic stack", func(t *testing.T) {
+		f := NewFiber(func() {}, DefaultStackSize, "ok-fiber")
+		f.Run()
+		if stack := f.PanicStack(); len(stack) != 0 {
+			t.Errorf("expected empty panic stack, got %d bytes", len(stack))
+		}
+	})
+}
+
+func TestFiberSetPriority(t *testing.T) {
+	t.Parallel()
+	f := NewFiber(func() {}, DefaultStackSize, "priority-test")
+	if got := f.PriorityValue(); got != 0 {
+		t.Errorf("default priority = %d, want 0", got)
+	}
+	f.SetPriority(42)
+	if got := f.PriorityValue(); got != 42 {
+		t.Errorf("priority after SetPriority(42) = %d, want 42", got)
+	}
+	f.SetPriority(-1)
+	if got := f.PriorityValue(); got != -1 {
+		t.Errorf("priority after SetPriority(-1) = %d, want -1", got)
+	}
+}
+
+func TestFiberPriorityValue(t *testing.T) {
+	t.Parallel()
+	f := NewFiber(func() {}, DefaultStackSize, "priority-value")
+	f.Priority = 99
+	if got := f.PriorityValue(); got != 99 {
+		t.Errorf("PriorityValue() = %d, want 99", got)
+	}
+}
+
+func TestFiberCreatedAtValue(t *testing.T) {
+	t.Parallel()
+	before := time.Now()
+	f := NewFiber(func() {}, DefaultStackSize, "created-at")
+	after := time.Now()
+	created := f.CreatedAtValue()
+	if created.Before(before) || created.After(after) {
+		t.Errorf("CreatedAtValue() = %v, should be between %v and %v", created, before, after)
+	}
+}
+
+func TestFiberMarkScheduled(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var f *Fiber
+		f.MarkScheduled() // should not panic
+	})
+	t.Run("normal case", func(t *testing.T) {
+		f := NewFiber(func() {}, DefaultStackSize, "mark-scheduled")
+		before := time.Now()
+		f.MarkScheduled()
+		after := time.Now()
+		if f.State != StateRunning {
+			t.Errorf("state after MarkScheduled = %s, want %s", f.State, StateRunning)
+		}
+		if f.LastScheduled.Before(before) || f.LastScheduled.After(after) {
+			t.Error("LastScheduled should be set to current time")
+		}
+		if f.SwitchCount != 1 {
+			t.Errorf("SwitchCount = %d, want 1", f.SwitchCount)
+		}
+	})
+	t.Run("already finished", func(t *testing.T) {
+		f := NewFiber(func() {}, DefaultStackSize, "finished")
+		f.Run()
+		prevSwitch := f.SwitchCount
+		f.MarkScheduled()
+		if f.SwitchCount != prevSwitch {
+			t.Errorf("SwitchCount should not change for finished fiber, got %d", f.SwitchCount)
+		}
+	})
+}
+
+func TestFiberAddCPUTime(t *testing.T) {
+	t.Parallel()
+	f := NewFiber(func() {}, DefaultStackSize, "cpu-time")
+	if f.CPUTime != 0 {
+		t.Errorf("initial CPUTime = %v, want 0", f.CPUTime)
+	}
+	f.AddCPUTime(5 * time.Millisecond)
+	if f.CPUTime != 5*time.Millisecond {
+		t.Errorf("CPUTime after AddCPUTime(5ms) = %v, want 5ms", f.CPUTime)
+	}
+	f.AddCPUTime(3 * time.Millisecond)
+	if f.CPUTime != 8*time.Millisecond {
+		t.Errorf("CPUTime after AddCPUTime(3ms) = %v, want 8ms", f.CPUTime)
+	}
+}
+
+func TestFiberString(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var f *Fiber
+		if got := f.String(); got != "Fiber[nil]" {
+			t.Errorf("nil fiber String() = %q, want %q", got, "Fiber[nil]")
+		}
+	})
+	t.Run("normal fiber", func(t *testing.T) {
+		f := NewFiber(func() {}, DefaultStackSize, "display")
+		f.SetPriority(7)
+		got := f.String()
+		want := "Fiber[ID="
+		if len(got) < len(want) || got[:len(want)] != want {
+			t.Errorf("Fiber.String() = %q, should start with %q", got, want)
+		}
+		if got == "Fiber[nil]" {
+			t.Errorf("non-nil fiber should not return %q", got)
+		}
+	})
+}
+
 func TestFiberConcurrency(t *testing.T) {
+	t.Parallel()
 	const numFibers = 100
 	done := make(chan bool, numFibers)
 

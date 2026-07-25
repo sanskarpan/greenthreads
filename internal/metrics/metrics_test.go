@@ -8,6 +8,7 @@ import (
 )
 
 func TestRecordFiberCreated(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	m.RecordFiberCreated(64 * 1024)
 	m.RecordFiberCreated(64 * 1024)
@@ -28,6 +29,7 @@ func TestRecordFiberCreated(t *testing.T) {
 }
 
 func TestRecordFiberCompleted(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	m.RecordFiberCreated(64 * 1024)
 	f := &fiber.Fiber{ID: 1, StackSize: 64 * 1024, CPUTime: 10 * time.Millisecond}
@@ -52,6 +54,7 @@ func TestRecordFiberCompleted(t *testing.T) {
 }
 
 func TestRecordFiberCompletedIsIdempotent(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	f := &fiber.Fiber{ID: 1, StackSize: 64 * 1024, CPUTime: 5 * time.Millisecond}
 	m.RecordFiberCompleted(f)
@@ -65,6 +68,7 @@ func TestRecordFiberCompletedIsIdempotent(t *testing.T) {
 }
 
 func TestSetBlockedFibers(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	m.SetBlockedFibers(5)
 	if got := m.GetSnapshot().BlockedFibers; got != 5 {
@@ -81,6 +85,7 @@ func TestSetBlockedFibers(t *testing.T) {
 }
 
 func TestRecordContextSwitch(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	for i := 0; i < 10; i++ {
 		m.RecordContextSwitch()
@@ -91,6 +96,7 @@ func TestRecordContextSwitch(t *testing.T) {
 }
 
 func TestRecordScheduleCall(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	for i := 0; i < 5; i++ {
 		m.RecordScheduleCall()
@@ -101,6 +107,7 @@ func TestRecordScheduleCall(t *testing.T) {
 }
 
 func TestRecordYield(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	for i := 0; i < 3; i++ {
 		m.RecordYield()
@@ -111,6 +118,7 @@ func TestRecordYield(t *testing.T) {
 }
 
 func TestRecordStealAttempt(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	m.RecordStealAttempt(true)
 	m.RecordStealAttempt(true)
@@ -130,6 +138,7 @@ func TestRecordStealAttempt(t *testing.T) {
 }
 
 func TestMetricsReset(t *testing.T) {
+	t.Parallel()
 	m := NewMetrics()
 	m.RecordFiberCreated(64 * 1024)
 	m.RecordContextSwitch()
@@ -148,6 +157,7 @@ func TestMetricsReset(t *testing.T) {
 }
 
 func TestEventTracker(t *testing.T) {
+	t.Parallel()
 	et := NewEventTracker(100)
 	for i := 0; i < 50; i++ {
 		et.RecordEvent(FiberEvent{
@@ -174,6 +184,7 @@ func TestEventTracker(t *testing.T) {
 }
 
 func TestEventTrackerBounds(t *testing.T) {
+	t.Parallel()
 	et := NewEventTracker(5)
 	for i := 0; i < 10; i++ {
 		et.RecordEvent(FiberEvent{FiberID: fiber.FiberID(i), EventType: EventCreated, Timestamp: time.Now()})
@@ -198,6 +209,7 @@ func TestEventTrackerBounds(t *testing.T) {
 }
 
 func TestNewEventTrackerDefaultSize(t *testing.T) {
+	t.Parallel()
 	et := NewEventTracker(0)
 	if et == nil {
 		t.Fatal("NewEventTracker(0) returned nil")
@@ -208,7 +220,104 @@ func TestNewEventTrackerDefaultSize(t *testing.T) {
 	}
 }
 
+func TestTrimCompletedMap(t *testing.T) {
+	t.Parallel()
+	t.Run("under target size", func(t *testing.T) {
+		m := map[fiber.FiberID]struct{}{
+			1: {}, 2: {}, 3: {},
+		}
+		trimCompletedMap(m, 10)
+		if len(m) != 3 {
+			t.Errorf("map size = %d, want 3 (unchanged)", len(m))
+		}
+	})
+	t.Run("over target size", func(t *testing.T) {
+		m := make(map[fiber.FiberID]struct{})
+		for i := 0; i < 100; i++ {
+			m[fiber.FiberID(i)] = struct{}{}
+		}
+		trimCompletedMap(m, 10)
+		if len(m) > 10 {
+			t.Errorf("map size = %d, want <= 10 after trim", len(m))
+		}
+	})
+}
+
+func TestRecordFiberBlocked(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics()
+	m.RecordFiberBlocked()
+	if got := m.GetSnapshot().BlockedFibers; got != 1 {
+		t.Errorf("BlockedFibers after RecordFiberBlocked = %d, want 1", got)
+	}
+	m.RecordFiberBlocked()
+	if got := m.GetSnapshot().BlockedFibers; got != 2 {
+		t.Errorf("BlockedFibers after 2x RecordFiberBlocked = %d, want 2", got)
+	}
+}
+
+func TestRecordFiberUnblocked(t *testing.T) {
+	t.Parallel()
+	t.Run("decrements when positive", func(t *testing.T) {
+		m := NewMetrics()
+		m.RecordFiberBlocked()
+		m.RecordFiberBlocked()
+		m.RecordFiberUnblocked()
+		if got := m.GetSnapshot().BlockedFibers; got != 1 {
+			t.Errorf("BlockedFibers after unblock = %d, want 1", got)
+		}
+	})
+	t.Run("no-op when at zero", func(t *testing.T) {
+		m := NewMetrics()
+		m.RecordFiberUnblocked()
+		if got := m.GetSnapshot().BlockedFibers; got != 0 {
+			t.Errorf("BlockedFibers when at 0 = %d, want 0", got)
+		}
+	})
+}
+
+func TestComputeBlockedFibersFrom(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var m *Metrics
+		m.ComputeBlockedFibersFrom(nil) // should not panic
+	})
+	t.Run("normal case", func(t *testing.T) {
+		m := NewMetrics()
+		blocked := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "blocked")
+		blocked.State = fiber.StateBlocked
+		runnable := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "runnable")
+		runnable.State = fiber.StateReady
+		fibers := []*fiber.Fiber{blocked, runnable, nil}
+		m.ComputeBlockedFibersFrom(fibers)
+		if got := m.GetSnapshot().BlockedFibers; got != 1 {
+			t.Errorf("BlockedFibers after compute = %d, want 1", got)
+		}
+	})
+}
+
+func TestStartRun(t *testing.T) {
+	t.Parallel()
+	t.Run("nil receiver", func(t *testing.T) {
+		var m *Metrics
+		m.StartRun() // should not panic
+	})
+	t.Run("normal case", func(t *testing.T) {
+		m := NewMetrics()
+		before := time.Now()
+m.StartRun()
+	snap := m.GetSnapshot()
+	if snap.Uptime < 0 {
+		t.Error("Uptime should be >= 0 after StartRun")
+	}
+	if snap.LastUpdateTime.Before(before) {
+			t.Error("StartTime should be updated to current time")
+		}
+	})
+}
+
 func TestEventTypeString(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		et   EventType
 		want string

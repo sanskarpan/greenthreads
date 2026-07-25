@@ -5,6 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	// pprof endpoints are an intentional production observability feature.
+	// Access to /debug/pprof must be restricted via network policy in production.
+	_ "net/http/pprof" //nolint:gosec // G108: profiling is intentional for production diagnostics
 	"os"
 	"os/signal"
 	"strconv"

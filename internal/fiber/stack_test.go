@@ -5,6 +5,7 @@ import (
 )
 
 func TestNewStack(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	if s == nil {
@@ -25,6 +26,7 @@ func TestNewStack(t *testing.T) {
 }
 
 func TestStackMinMaxSize(t *testing.T) {
+	t.Parallel()
 	// Test minimum size
 	s := NewStack(1024)
 	if s.Size() != MinStackSize {
@@ -45,6 +47,7 @@ func TestStackMinMaxSize(t *testing.T) {
 }
 
 func TestStackPush(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	data := []byte("test data")
@@ -64,6 +67,7 @@ func TestStackPush(t *testing.T) {
 }
 
 func TestStackPop(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	original := []byte("test data")
@@ -87,6 +91,7 @@ func TestStackPop(t *testing.T) {
 }
 
 func TestStackOverflow(t *testing.T) {
+	t.Parallel()
 	s := NewStack(MinStackSize)
 
 	data := make([]byte, MinStackSize+100)
@@ -98,6 +103,7 @@ func TestStackOverflow(t *testing.T) {
 }
 
 func TestStackUnderflow(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	_, err := s.Pop(100)
@@ -108,6 +114,7 @@ func TestStackUnderflow(t *testing.T) {
 }
 
 func TestStackRejectsNegativePop(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 	if _, err := s.Pop(-1); err == nil {
 		t.Fatal("negative pop should return an error")
@@ -118,6 +125,7 @@ func TestStackRejectsNegativePop(t *testing.T) {
 }
 
 func TestStackReset(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	data := []byte("test data")
@@ -137,6 +145,7 @@ func TestStackReset(t *testing.T) {
 }
 
 func TestStackUsage(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 
 	if s.Usage() != 0.0 {
@@ -157,6 +166,7 @@ func TestStackUsage(t *testing.T) {
 }
 
 func TestStackClone(t *testing.T) {
+	t.Parallel()
 	original := NewStack(DefaultStackSize)
 	data := []byte("test data")
 	if err := original.Push(data); err != nil {
@@ -182,6 +192,7 @@ func TestStackClone(t *testing.T) {
 }
 
 func TestStackGetInfo(t *testing.T) {
+	t.Parallel()
 	s := NewStack(DefaultStackSize)
 	quarterSize := s.Size() / 4
 	data := make([]byte, quarterSize)
@@ -211,6 +222,7 @@ func TestStackGetInfo(t *testing.T) {
 }
 
 func TestValidateStackSize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    int
 		expected int

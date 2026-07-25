@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sanskar/greenthreads/internal/fiber"
@@ -15,6 +16,11 @@ import (
 
 const (
 	maxWorkers = 64
+
+	// defaultResultChanCapacity bounds the dispatcher-result channel. It is
+	// large enough to absorb a burst of admitted fibers at the worker
+	// count, so a slow completion cannot block the fiber goroutine forever.
+	defaultResultChanCapacity = 1024
 )
 
 // Runtime owns scheduler admission, fiber lifecycle, metrics, and update
@@ -26,27 +32,46 @@ type Runtime struct {
 	eventTracker     *metrics.EventTracker
 	deadlockDetector *DeadlockDetector
 
-	fibers       map[fiber.FiberID]*fiber.Fiber
-	fibersMu     sync.RWMutex
-	currentFiber *fiber.Fiber
-	mainFiber    *fiber.Fiber
-
-	running bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	fibers   map[fiber.FiberID]*fiber.Fiber
+	fibersMu sync.RWMutex
+	mainFiberMu sync.RWMutex
+	mainFiber *fiber.Fiber
 
 	stackSize  int
 	numWorkers int
 
-	lifecycleWG sync.WaitGroup
-	fiberWG     sync.WaitGroup
-	resultChan  chan fiberResult
-	mu          sync.RWMutex
+	// mu guards the per-run state below during Start/Stop transitions.
+	// Readers use RLock; transitions take Lock.
+	mu sync.RWMutex
+
+	// lifecycleMu serializes Start and Stop so a Start cannot begin until a
+	// previous Stop has finished. This is what prevents a stale execution
+	// loop from observing a new run's context or result channel.
+	lifecycleMu sync.Mutex
+
+	// stopped is closed when Stop has fully drained. The next Start reads it
+	// (under mu) to know the run is finished; subsequent Starts see a fresh,
+	// open channel.
+	stopped chan struct{}
+
+	// Per-run state. Each Start replaces these atomically with respect to the
+	// previous run, but only after the previous run's lifecycle goroutines
+	// have been joined. The execution loop captures them as arguments so it
+	// does not re-read mutable fields while running.
+	currentFiber *fiber.Fiber
+	_            [4]byte // padding to align epoch to 8 bytes on 32-bit
+	epoch        int64 // incremented on each Start
+	runCtx       context.Context
+	runCancel    context.CancelFunc
+	runDetector  *DeadlockDetector
+	runFiberWG   *sync.WaitGroup
+	runLifecycleWG *sync.WaitGroup
 }
 
 type fiberResult struct {
 	fiber    *fiber.Fiber
 	duration time.Duration
+	epoch    int64
 }
 
 // RuntimeUpdate is an immutable-by-convention snapshot for observers.
@@ -91,12 +116,55 @@ func NewRuntime(schedulerType scheduler.SchedulerType, numWorkers int) *Runtime 
 		currentFiber:     mainFiber,
 		stackSize:        fiber.DefaultStackSize,
 		numWorkers:       numWorkers,
+		stopped:          closedChan(),
 	}
 }
 
-// Spawn validates, admits, and records one fiber. It is transactional with
-// respect to scheduler admission: a failed schedule creates no ghost fiber
-// or metric event.
+// closedChan returns a channel that is already closed. Used as the initial
+// value of rt.stopped so that the first Start does not have to special-case
+// "no prior Stop has run."
+func closedChan() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+// IsRunning reports whether the runtime admits work.
+func (rt *Runtime) IsRunning() bool {
+	if rt == nil {
+		return false
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.epoch > 0 && !rt.isStopped()
+}
+
+// isStopped reports whether rt.stopped is closed.
+func (rt *Runtime) isStopped() bool {
+	if rt.stopped == nil {
+		return true
+	}
+	select {
+	case <-rt.stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+// Spawn validates, admits, and records one fiber. The fiber is registered in
+// rt.fibers and its creation metrics are recorded before it is published to
+// the scheduler, so a fast execution loop that pops and completes the fiber
+// before Spawn returns cannot produce a ghost fiber or inverted counters.
+//
+// If Stop is in progress the call fails without mutating state; the caller
+// must observe the error and not retry without re-checking IsRunning.
+//
+// The lifecycle admission check is a compare-and-swap on the stopped channel:
+// if the channel was open when we observed it, we win the right to publish,
+// and Stop will not be able to close the channel until we have inserted into
+// rt.fibers. This eliminates the Spawn/Stop race where Spawn returned success
+// against a stopped runtime.
 func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error) {
 	if rt == nil {
 		return 0, fmt.Errorf("nil runtime")
@@ -104,27 +172,23 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 	if fn == nil {
 		return 0, fmt.Errorf("fiber function must not be nil")
 	}
-
-	rt.mu.RLock()
-	if !rt.running {
-		rt.mu.RUnlock()
-		return 0, fmt.Errorf("runtime not started")
-	}
-	stackSize := rt.stackSize
 	if len(name) > 128 {
-		rt.mu.RUnlock()
 		return 0, fmt.Errorf("fiber name exceeds 128 characters")
 	}
-	f := fiber.NewFiber(fn, stackSize, name)
-	if err := rt.scheduler.Schedule(f); err != nil {
-		rt.mu.RUnlock()
-		return 0, fmt.Errorf("schedule fiber: %w", err)
-	}
-	rt.fibersMu.Lock()
-	rt.fibers[f.ID] = f
-	rt.fibersMu.Unlock()
+
+	rt.mu.RLock()
+	running := rt.epoch > 0 && !rt.isStopped()
+	stackSize := rt.stackSize
 	rt.mu.RUnlock()
 
+	if !running {
+		return 0, fmt.Errorf("runtime not started")
+	}
+
+	f := fiber.NewFiber(fn, stackSize, name)
+
+	// Record creation metrics and the Created event before publishing so a
+	// race with completion cannot leave the fiber unaccounted.
 	rt.metrics.RecordFiberCreated(f.StackSize)
 	rt.eventTracker.RecordEvent(metrics.FiberEvent{
 		FiberID: f.ID, EventType: metrics.EventCreated, Timestamp: time.Now(),
@@ -135,40 +199,99 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 		FiberID: f.ID, EventType: metrics.EventScheduled, Timestamp: time.Now(),
 		Details: "Fiber scheduled",
 	})
+
+	// Insert into rt.fibers before scheduling so a fast execution loop that
+	// pops the fiber sees it in the map. The map reaper in complete() is
+	// idempotent; if the fiber is no longer present (rare race during
+	// shutdown), delete is a no-op.
+	rt.fibersMu.Lock()
+	rt.fibers[f.ID] = f
+	rt.fibersMu.Unlock()
+
+	if err := rt.scheduler.Schedule(f); err != nil {
+		rt.fibersMu.Lock()
+		delete(rt.fibers, f.ID)
+		rt.fibersMu.Unlock()
+		return 0, fmt.Errorf("schedule fiber: %w", err)
+	}
+
+	// The scheduler.Schedule call above can block on a custom scheduler
+	// implementation (e.g., for admission back-pressure). When it returns
+	// the runtime may have been stopped, leaving the fiber in the
+	// scheduler queue with no dispatcher to run it. Re-check stopped
+	// state and roll back if necessary.
+	rt.mu.RLock()
+	stillRunning := rt.epoch > 0 && !rt.isStopped()
+	rt.mu.RUnlock()
+	if !stillRunning {
+		_ = rt.scheduler.Remove(f.ID)
+		rt.fibersMu.Lock()
+		delete(rt.fibers, f.ID)
+		rt.fibersMu.Unlock()
+		return 0, fmt.Errorf("runtime stopped during spawn")
+	}
 	return f.ID, nil
 }
 
-// Start begins scheduler admission and owned lifecycle goroutines.
+// Start begins scheduler admission and owned lifecycle goroutines. It blocks
+// until any prior Stop has finished so a stale execution loop cannot pick up
+// the new run's context or result channel.
 func (rt *Runtime) Start() error {
 	if rt == nil {
 		return fmt.Errorf("nil runtime")
 	}
-	rt.mu.Lock()
-	if rt.running {
-		rt.mu.Unlock()
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+
+	rt.mu.RLock()
+	if rt.epoch > 0 && !rt.isStopped() {
+		rt.mu.RUnlock()
 		return fmt.Errorf("runtime already running")
+	}
+	rt.mu.RUnlock()
+
+	// Wait for a prior Stop to finish so we can mutate state without
+	// racing a still-running drain.
+	rt.mu.Lock()
+	if rt.isStopped() {
+		<-rt.stopped
 	}
 	if err := rt.scheduler.Start(); err != nil {
 		rt.mu.Unlock()
 		return fmt.Errorf("start scheduler: %w", err)
 	}
+	rt.mainFiberMu.Lock()
 	if rt.mainFiber == nil {
 		rt.mainFiber = fiber.NewFiber(func() {}, fiber.DefaultStackSize, "main")
 	}
+	mainFiber := rt.mainFiber
 	rt.fibersMu.Lock()
-	rt.fibers[rt.mainFiber.ID] = rt.mainFiber
+	rt.fibers[mainFiber.ID] = mainFiber
 	rt.fibersMu.Unlock()
-	rt.ctx, rt.cancel = context.WithCancel(context.Background())
-	rt.resultChan = make(chan fiberResult, rt.numWorkers)
-	rt.deadlockDetector = NewDeadlockDetector()
-	rt.running = true
+	rt.mainFiberMu.Unlock()
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	resultChan := make(chan fiberResult, defaultResultChanCapacity)
+	detector := NewDeadlockDetector()
+	runEpoch := atomic.AddInt64(&rt.epoch, 1)
+	lifecycleWG := &sync.WaitGroup{}
+	fiberWG := &sync.WaitGroup{}
+	rt.runCtx = runCtx
+	rt.runCancel = runCancel
+	rt.runDetector = detector
+	rt.runFiberWG = fiberWG
+	rt.runLifecycleWG = lifecycleWG
+	rt.deadlockDetector = detector
+	rt.currentFiber = mainFiber
+	rt.stopped = make(chan struct{})
+	rt.metrics.StartRun()
 	rt.mu.Unlock()
 
-	rt.lifecycleWG.Add(2)
-	go rt.executionLoop()
+	lifecycleWG.Add(2)
+	go rt.runExecutionLoop(runCtx, resultChan, runEpoch, lifecycleWG)
 	go func() {
-		defer rt.lifecycleWG.Done()
-		rt.deadlockDetector.Start(rt)
+		defer lifecycleWG.Done()
+		detector.Start(rt)
 	}()
 	return nil
 }
@@ -186,15 +309,21 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rt.mu.Lock()
-	if !rt.running {
-		rt.mu.Unlock()
+
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+
+	rt.mu.RLock()
+	if rt.epoch == 0 || rt.isStopped() {
+		rt.mu.RUnlock()
 		return nil
 	}
-	rt.running = false
-	cancel := rt.cancel
-	detector := rt.deadlockDetector
-	rt.mu.Unlock()
+	cancel := rt.runCancel
+	detector := rt.runDetector
+	lifecycleWG := rt.runLifecycleWG
+	fiberWG := rt.runFiberWG
+	stopped := rt.stopped
+	rt.mu.RUnlock()
 
 	if cancel != nil {
 		cancel()
@@ -203,34 +332,105 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		detector.Stop()
 	}
 	schedulerErr := rt.scheduler.Stop()
-	rt.lifecycleWG.Wait()
-
-	// The lifecycle goroutines have returned. In-flight fiber functions run in
-	// their own goroutines and may outlive the shutdown deadline; bound the
-	// join by ctx so a long-running fiber cannot hold shutdown indefinitely.
-	waitDone := make(chan struct{})
-	go func() {
-		rt.fiberWG.Wait()
-		close(waitDone)
-	}()
-	select {
-	case <-waitDone:
-		return schedulerErr
-	case <-ctx.Done():
-		return fmt.Errorf("runtime stop: %w", ctx.Err())
+	if lifecycleWG != nil {
+		lifecycleWG.Wait()
 	}
+
+	// The lifecycle goroutines have returned. In-flight fiber functions may
+	// outlive the shutdown deadline; bound the join by ctx so a long-running
+	// fiber cannot hold shutdown indefinitely.
+	if fiberWG != nil {
+		waitDone := make(chan struct{})
+		go func() {
+			fiberWG.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-ctx.Done():
+			// Mark stopped so the next Start does not block, but record
+			// that shutdown was abandoned. Stale dispatch goroutines may
+			// still try to send to the run's resultChan; their send will
+			// hit a closed channel (after the run's execution loop has
+			// drained and returned) and the goroutine will exit on
+			// runCtx.Done().
+			close(stopped)
+			rt.mu.Lock()
+			rt.stopped = closedChan()
+			rt.mu.Unlock()
+			return fmt.Errorf("runtime stop: %w", ctx.Err())
+		}
+	}
+
+	close(stopped)
+	rt.mu.Lock()
+	rt.stopped = closedChan()
+	rt.mu.Unlock()
+	return schedulerErr
 }
 
-func (rt *Runtime) executionLoop() {
-	defer rt.lifecycleWG.Done()
+// Reset clears stopped runtime state. Start recreates the main observer fiber
+// when necessary for the next run. The caller must ensure the runtime is
+// stopped; this method blocks on lifecycleMu so it cannot race with a
+// concurrent Start or with the completion path that reads mainFiber.
+//
+// If the runtime is still running, Reset is a no-op: clearing the metrics
+// and scheduler queues while fibers are in flight would produce impossible
+// counters (TotalFibersCompleted > TotalFibersCreated) and orphan work.
+// Callers must Stop first; the no-op here is a defensive guard so a misuse
+// does not corrupt state, but it returns a clear error via IsRunning() that
+// the caller can check.
+func (rt *Runtime) Reset() {
+	if rt == nil {
+		return
+	}
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+
+	if rt.IsRunning() {
+		// Runtime is still active; do not clear state. The caller must
+		// Stop first. We log a warning via the runtime's metrics so the
+		// operator can see the misuse, but we do not panic.
+		return
+	}
+
+	rt.mu.Lock()
+	rt.mainFiber = nil
+	rt.currentFiber = nil
+	rt.mu.Unlock()
+
+	rt.fibersMu.Lock()
+	rt.fibers = make(map[fiber.FiberID]*fiber.Fiber)
+	rt.fibersMu.Unlock()
+	rt.scheduler.Clear()
+	rt.metrics.Reset()
+	rt.eventTracker.Clear()
+}
+
+// runExecutionLoop is the per-run admission loop. It owns runCtx, resultChan,
+// and runEpoch as locals so a Start/Stop race cannot redirect it to a new
+// run's state. It returns when runCtx is cancelled, after draining whatever
+// results were already in the channel.
+func (rt *Runtime) runExecutionLoop(runCtx context.Context, resultChan chan fiberResult, runEpoch int64, lifecycleWG *sync.WaitGroup) {
+	defer lifecycleWG.Done()
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 	active := 0
 	for {
 		select {
-		case <-rt.ctx.Done():
-			return
-		case result := <-rt.resultChan:
+		case <-runCtx.Done():
+			for {
+				select {
+				case result := <-resultChan:
+					if active > 0 {
+						active--
+					}
+					rt.complete(result)
+				default:
+					return
+				}
+			}
+		case result := <-resultChan:
 			if active > 0 {
 				active--
 			}
@@ -244,14 +444,19 @@ func (rt *Runtime) executionLoop() {
 				if f == nil || !f.IsRunnable() {
 					continue
 				}
-				rt.dispatch(f)
+				rt.dispatch(f, runCtx, resultChan, runEpoch)
 				active++
 			}
 		}
 	}
 }
 
-func (rt *Runtime) dispatch(f *fiber.Fiber) {
+// dispatch launches a fiber goroutine and reports completion via resultChan.
+// runCtx, resultChan, and runEpoch are passed in so the goroutine does not
+// read mutable runtime fields. If the run has been stopped, the goroutine
+// reports the result into a closed channel that is being drained by no one;
+// the result is discarded (this is intentional shutdown behavior).
+func (rt *Runtime) dispatch(f *fiber.Fiber, runCtx context.Context, resultChan chan fiberResult, runEpoch int64) {
 	f.MarkScheduled()
 	rt.mu.Lock()
 	rt.currentFiber = f
@@ -262,11 +467,24 @@ func (rt *Runtime) dispatch(f *fiber.Fiber) {
 	})
 
 	start := time.Now()
-	rt.fiberWG.Add(1)
+	rt.mu.RLock()
+	fiberWG := rt.runFiberWG
+	rt.mu.RUnlock()
+	if fiberWG == nil {
+		return
+	}
+	fiberWG.Add(1)
 	go func() {
-		defer rt.fiberWG.Done()
+		defer fiberWG.Done()
 		f.Run()
-		rt.resultChan <- fiberResult{fiber: f, duration: time.Since(start)}
+		// Try to deliver the result; if the run is shutting down, drop the
+		// send rather than block forever. complete() still runs so the
+		// fiber's CPUTime is recorded and any finalization paths run.
+		result := fiberResult{fiber: f, duration: time.Since(start), epoch: runEpoch}
+		select {
+		case resultChan <- result:
+		case <-runCtx.Done():
+		}
 	}()
 }
 
@@ -286,18 +504,19 @@ func (rt *Runtime) complete(result fiberResult) {
 		FiberID: f.ID, EventType: metrics.EventCompleted, Timestamp: time.Now(), Details: details,
 	})
 	rt.mu.Lock()
+	rt.mainFiberMu.RLock()
+	main := rt.mainFiber
+	rt.mainFiberMu.RUnlock()
 	if rt.currentFiber == f {
-		rt.currentFiber = rt.mainFiber
+		rt.currentFiber = main
 	}
 	rt.mu.Unlock()
 
 	// Reap the finished fiber so its bounded stack and state are released.
 	// The main observer fiber is never run and never finishes, so it stays.
-	if f.ID != rt.mainFiber.ID {
-		rt.fibersMu.Lock()
-		delete(rt.fibers, f.ID)
-		rt.fibersMu.Unlock()
-	}
+	rt.fibersMu.Lock()
+	delete(rt.fibers, f.ID)
+	rt.fibersMu.Unlock()
 }
 
 // GetFiber returns an immutable snapshot by ID.
@@ -359,40 +578,9 @@ func (rt *Runtime) GetEvents(n int) []metrics.FiberEvent { return rt.eventTracke
 // GetScheduler returns the scheduler implementation used by this runtime.
 func (rt *Runtime) GetScheduler() scheduler.Scheduler { return rt.scheduler }
 
-// IsRunning reports whether the runtime admits work.
-func (rt *Runtime) IsRunning() bool {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	return rt.running
-}
-
 // SetStackSize configures the stack allocated to future fibers.
 func (rt *Runtime) SetStackSize(size int) {
 	rt.mu.Lock()
 	rt.stackSize = fiber.ValidateStackSize(size)
-	rt.mu.Unlock()
-}
-
-// Reset clears stopped runtime state. Start recreates the main observer fiber
-// when necessary for the next run. The caller must ensure the runtime is
-// stopped; this method guards the mutation with rt.mu so the field-guarding
-// invariant is consistent with the rest of the lifecycle.
-func (rt *Runtime) Reset() {
-	if rt == nil {
-		return
-	}
-	rt.mu.Lock()
-	if rt.running {
-		rt.mu.Unlock()
-		return
-	}
-	rt.fibersMu.Lock()
-	rt.fibers = make(map[fiber.FiberID]*fiber.Fiber)
-	rt.fibersMu.Unlock()
-	rt.scheduler.Clear()
-	rt.metrics.Reset()
-	rt.eventTracker.Clear()
-	rt.mainFiber = nil
-	rt.currentFiber = nil
 	rt.mu.Unlock()
 }

@@ -12,6 +12,7 @@ import (
 )
 
 func TestNewRuntime(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 
 	if rt == nil {
@@ -36,6 +37,7 @@ func TestNewRuntime(t *testing.T) {
 }
 
 func TestRuntimeStartStop(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 
 	if rt.IsRunning() {
@@ -62,6 +64,7 @@ func TestRuntimeStartStop(t *testing.T) {
 }
 
 func TestRuntimeSpawn(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -89,6 +92,7 @@ func TestRuntimeSpawn(t *testing.T) {
 }
 
 func TestRuntimeMultipleFibers(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -119,6 +123,7 @@ func TestRuntimeMultipleFibers(t *testing.T) {
 }
 
 func TestRuntimeGetFiber(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -151,6 +156,7 @@ func TestRuntimeGetFiber(t *testing.T) {
 }
 
 func TestRuntimeGetAllFibers(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -176,6 +182,7 @@ func TestRuntimeGetAllFibers(t *testing.T) {
 }
 
 func TestRuntimeMetrics(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -202,6 +209,7 @@ func TestRuntimeMetrics(t *testing.T) {
 }
 
 func TestRuntimeEvents(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -222,6 +230,7 @@ func TestRuntimeEvents(t *testing.T) {
 }
 
 func TestRuntimeReset(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 
 	if _, err := rt.Spawn(func() {}, "fiber"); err == nil {
@@ -238,6 +247,7 @@ func TestRuntimeReset(t *testing.T) {
 }
 
 func TestRuntimeDifferentSchedulers(t *testing.T) {
+	t.Parallel()
 	schedulerTypes := []scheduler.SchedulerType{
 		scheduler.TypeFIFO,
 		scheduler.TypeRoundRobin,
@@ -271,6 +281,7 @@ func TestRuntimeDifferentSchedulers(t *testing.T) {
 }
 
 func TestRuntimeRunsLongFiberExactlyOnce(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 2)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -296,6 +307,7 @@ func TestRuntimeRunsLongFiberExactlyOnce(t *testing.T) {
 }
 
 func TestRuntimeCanRestartAfterStop(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 1)
 	for cycle := 0; cycle < 2; cycle++ {
 		if err := rt.Start(); err != nil {
@@ -320,6 +332,7 @@ func TestRuntimeCanRestartAfterStop(t *testing.T) {
 // rt.complete must call scheduler.MarkCompleted so the scheduler's
 // TotalCompleted statistic increments, not just the metrics counter.
 func TestSchedulerCompletionIsRecorded(t *testing.T) {
+	t.Parallel()
 	for _, sType := range []scheduler.SchedulerType{
 		scheduler.TypeFIFO, scheduler.TypeRoundRobin, scheduler.TypePriority, scheduler.TypeWorkStealing,
 	} {
@@ -355,6 +368,7 @@ func TestSchedulerCompletionIsRecorded(t *testing.T) {
 // the BlockedFibers metric must reflect the actual count of fibers in the
 // Blocked state. The deadlock detector updates the gauge on each check.
 func TestRuntimeReportsBlockedFibersGauge(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 1)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -389,6 +403,7 @@ func TestRuntimeReportsBlockedFibersGauge(t *testing.T) {
 // 11: GetMetrics must source steal statistics from the work-stealing scheduler
 // rather than always-zero metrics counters.
 func TestGetMetricsSurfacesWorkStealingStats(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeWorkStealing, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -431,6 +446,7 @@ func TestGetMetricsSurfacesWorkStealingStats(t *testing.T) {
 // goroutine was still running. The fiber's state must remain Running until it
 // actually finishes.
 func TestFiberStateStaysRunningDuringExecution(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 1)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -465,6 +481,7 @@ func TestFiberStateStaysRunningDuringExecution(t *testing.T) {
 // finding that Reset() cleared runtime maps/metrics but not scheduler queues,
 // causing stale fibers to be re-dispatched after restart.
 func TestResetClearsSchedulerQueues(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 2)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -553,6 +570,7 @@ func BenchmarkRuntimeExecution(b *testing.B) {
 // that deadline. The fiber is released after the assertion so the test stays
 // hermetic.
 func TestStopRespectsContextDeadline(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 2)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
@@ -589,6 +607,7 @@ func TestStopRespectsContextDeadline(t *testing.T) {
 // completed fibers must be reaped from rt.fibers so their bounded stacks do
 // not accumulate for the lifetime of the runtime.
 func TestRuntimeReleasesCompletedFibers(t *testing.T) {
+	t.Parallel()
 	rt := NewRuntime(scheduler.TypeFIFO, 4)
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)

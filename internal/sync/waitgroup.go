@@ -113,6 +113,7 @@ func (fwg *FiberWaitGroup) WaitCtx(ctx context.Context, currentFiber *fiber.Fibe
 		default:
 			fwg.removeWaiterLocked(waiter)
 			fwg.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}
@@ -231,6 +232,7 @@ func (fs *FiberSemaphore) AcquireCtx(ctx context.Context, currentFiber *fiber.Fi
 		default:
 			fs.removeWaiterLocked(waiter)
 			fs.mu.Unlock()
+			currentFiber.Unblock()
 			return ctx.Err()
 		}
 	}

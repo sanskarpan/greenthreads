@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +15,20 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// randomAddr returns a localhost address on a free port. There is a brief race
+// between closing the probe listener and the caller binding the same port, but
+// for test isolation this is acceptable.
+func randomAddr(t testing.TB) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("randomAddr: %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
 
 // startServerOn starts s on addr and blocks until /healthz is responsive or the
 // deadline passes. It returns a cleanup that shuts the server down.
@@ -47,14 +62,13 @@ func startServerOn(t *testing.T, s *Server, addr string) func() {
 // single client that never reads.
 func drain(conn *websocket.Conn, done <-chan struct{}) {
 	go func() {
-		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+		_ = conn.SetReadDeadline(time.Time{})
 		for {
 			select {
 			case <-done:
 				return
 			default:
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 			if _, _, err := conn.ReadMessage(); err != nil {
 				select {
 				case <-done:
@@ -160,7 +174,7 @@ func TestStressSoakLoad(t *testing.T) {
 		MessagesPerSecond:   10000,
 		MaxFibersPerRuntime: 100000,
 	})
-	addr := "127.0.0.1:19001"
+	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
 	defer cleanup()
 	baseURL := "http://" + addr
@@ -263,7 +277,7 @@ func TestStressSoakLoad(t *testing.T) {
 // with no init. Then verifies a real client can still init+spawn.
 func TestStressRapidConnectDisconnect(t *testing.T) {
 	server := NewServer(nil)
-	addr := "127.0.0.1:19002"
+	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
 	defer cleanup()
 	baseURL := "http://" + addr
@@ -321,7 +335,7 @@ func TestStressBoundaryPayloads(t *testing.T) {
 	server := NewServerWithConfig(nil, ServerConfig{
 		MessagesPerSecond: 10000,
 	})
-	addr := "127.0.0.1:19003"
+	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
 	defer cleanup()
 
@@ -397,7 +411,7 @@ func TestStressBoundaryPayloads(t *testing.T) {
 // an AuthToken is configured.
 func TestStressNonLoopbackAuth(t *testing.T) {
 	server := NewServerWithConfig(nil, ServerConfig{AuthToken: "testsecret"})
-	addr := "127.0.0.1:19004"
+	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
 	defer cleanup()
 	baseURL := "http://" + addr
@@ -449,7 +463,7 @@ func TestStressSpawnToLimit(t *testing.T) {
 		MaxFibersPerRuntime: 5,
 		MessagesPerSecond:   10000,
 	})
-	addr := "127.0.0.1:19005"
+	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
 	defer cleanup()
 

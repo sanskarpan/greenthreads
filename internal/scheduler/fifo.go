@@ -24,7 +24,9 @@ func (s *FIFOScheduler) Next() (*fiber.Fiber, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Remove finished fibers
+	// Remove finished fibers. filterFinished only drops the entries; the
+	// authoritative completion accounting happens in MarkCompleted, which
+	// the runtime calls in complete().
 	s.runQueue = s.filterFinished(s.runQueue)
 
 	if len(s.runQueue) == 0 {
@@ -40,14 +42,13 @@ func (s *FIFOScheduler) Next() (*fiber.Fiber, error) {
 	return f, nil
 }
 
-// filterFinished removes finished fibers from the queue
+// filterFinished removes finished fibers from the queue. It does NOT update
+// completion statistics; that is the runtime's responsibility.
 func (s *FIFOScheduler) filterFinished(queue []*fiber.Fiber) []*fiber.Fiber {
 	filtered := make([]*fiber.Fiber, 0, len(queue))
 	for _, f := range queue {
 		if !f.IsFinished() {
 			filtered = append(filtered, f)
-		} else {
-			s.totalCompleted++
 		}
 	}
 	return filtered

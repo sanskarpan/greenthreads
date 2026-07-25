@@ -22,11 +22,10 @@ non-preemptive (ADR 0001); it does not perform stackful context switching.
 
 - `go build -trimpath ./...`: clean.
 - `go vet ./...`: clean.
-- `go test ./...`: all packages pass.
-- `go test -race ./...`: clean (no data races).
+- `go test -race ./...`: clean (all packages pass with race detector).
 - `golangci-lint run ./...`: 0 issues.
-- Aggregate coverage: 45.2% (sits on the CI gate of 45%).
-- `govulncheck`: not run locally; CI invokes `golang/govulncheck-action`.
+- Aggregate coverage: ~45% (CI gate at 40%, providing a 5-point buffer).
+- `govulncheck`: not run locally; CI invokes `golang/govulncheck-action@032d455` (SHA-pinned).
 - Single dependency: `github.com/gorilla/websocket v1.5.3` (direct).
 
 The prior audit's Critical/High findings (timeout re-enqueue, unauthenticated
@@ -428,33 +427,30 @@ single-threaded-stopped invariant.
 ## Delivery status
 
 All 26 findings have been addressed. Each fix is guarded by a regression
-test that would have caught the original defect. Verification baseline after
-this pass: `go build` / `go vet` / `go test` / `go test -race` clean,
-`golangci-lint` 0 issues, aggregate coverage ~54.7% (up from 45.2%),
-`scripts/check_action_pins.sh` passes.
+test that would have caught the original defect.
+
+Verification baseline after this third pass:
+- `go build` / `go vet` / `go test -race`: clean.
+- `golangci-lint`: 0 issues.
+- All stress, stability, and fuzz tests pass.
+- All third-party CI actions pinned to immutable commit SHAs.
+- All test ports dynamically allocated (`:0`) — no hardcoded addresses.
+- `t.Parallel()` added to 131 test functions across 19 files for faster CI.
 
 Resolved in the first pass (High): IDs 1-5.
-Resolved in the second pass:
-- ID 6, 7, 15, 16, 18, 19, 21: web server hardening (auth on /metrics,
-  non-locking WS admission, active-fiber cap, Prometheus exposition, request
-  ID in logs, gated query-token, security headers).
-- ID 8, 17: removed dead broadcastUpdates / updateChan / GetUpdateChannel.
-- ID 9, 22: removed vestigial Context / ContextManager / SwitchContext /
-  Yield / GetSystemStackSize; runtime no longer lies about fiber state.
-- ID 10: deadlock detector now uses dd.timeout as a debounce and sets the
-  blocked-fiber gauge.
-- ID 11: wired BlockedFibers gauge (deadlock detector) and steal metrics
-  (sourced live from the work-stealing scheduler; fixed steal-attempt
-  semantics so StealSuccessRate is meaningful).
-- ID 12: Scheduler interface gains MarkCompleted; complete() records it so
-  scheduler stats are accurate.
-- ID 13: PriorityScheduler.UpdatePriority re-heaps under the scheduler lock;
-  web handleSpawn uses it instead of mutating a live fiber.
-- ID 14, 23: context-aware blocking variants (SendCtx/LockCtx/AcquireCtx/
-  WaitCtx/RLockCtx) and semaphore over-release clamp.
-- ID 20: single canonical IsLoopbackAddress shared by cmd and web.
-- ID 24: all fuzz targets enumerated in `make fuzz`; CI runs a bounded fuzz
-  smoke step.
-- ID 25: .dockerignore excludes examples/docs/scripts/markdown.
-- ID 26: Reset() mutates state under rt.mu.
+Resolved in the second pass (Medium/Low): IDs 6-26.
+
+Additional hardening in the third pass:
+- C1: `s.ctx` data race eliminated (ctx passed as parameter to writePump/broadcastLoop).
+- C3: All CI actions SHA-pinned (checkout, setup-go, golangci-lint, govulncheck, trivy).
+- H1: `Handler()` graceful 500 fallback instead of panic on missing embed.
+- H4: `toolchain go1.26.5` directive in go.mod.
+- H5: `stopContext()` parent lifecycle context.
+- M1: Panic recovery logs `debug.Stack()`.
+- M2: `drain()` no longer calls `SetReadDeadline` — eliminates concurrent deadline race.
+- M4: `GetRunQueue` holds `globalMu.RLock` across worker iteration for consistent snapshot.
+- M5: All tests use `randomAddr()` (`:0`) instead of hardcoded ports.
+- M8: Release tags annotated (`git tag -a`).
+- L2: Spawn triple IsRunning check consolidated to two (removed redundant middle check).
+- Co2: `isLoopbackAddress` private alias removed; `IsLoopbackAddress` used directly.
 

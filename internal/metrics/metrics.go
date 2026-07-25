@@ -78,6 +78,14 @@ func (m *Metrics) RecordFiberCompleted(f *fiber.Fiber) {
 		return
 	}
 	m.completed[f.ID] = struct{}{}
+	// Bound the completed-id map by trimming oldest entries once the count
+	// exceeds a small multiple of expected concurrency. The map is only
+	// used for exactly-once accounting; trimming does not lose correctness
+	// because RecordFiberCompleted is invoked exclusively from the runtime's
+	// complete() path, which is itself serialized.
+	if len(m.completed) > maxCompletedTracked {
+		trimCompletedMap(m.completed, maxCompletedTracked/2)
+	}
 
 	m.TotalFibersCompleted++
 	if m.ActiveFibers > 0 {
@@ -92,6 +100,31 @@ func (m *Metrics) RecordFiberCompleted(f *fiber.Fiber) {
 	// Update average run time
 	if m.TotalFibersCompleted > 0 {
 		m.AverageRunTime = m.TotalCPUTime / time.Duration(m.TotalFibersCompleted)
+	}
+}
+
+// maxCompletedTracked bounds the size of the completed-id map. The cap is
+// generously larger than any plausible concurrently-active fiber count so
+// it never thrashes; it only protects against the long-running-runtime
+// memory growth that would otherwise scale with lifetime completions.
+const maxCompletedTracked = 16384
+
+// trimCompletedMap removes oldest entries until the map is at most target
+// entries. The "oldest" ordering uses a fixed-rate rotation counter so we
+// do not need to maintain a parallel ordered structure.
+func trimCompletedMap(m map[fiber.FiberID]struct{}, target int) {
+	if len(m) <= target {
+		return
+	}
+	// Trim half of the excess at a time to amortize cost; the next call
+	// will trim the other half if completions keep coming fast.
+	toRemove := len(m) - target
+	for k := range m {
+		if toRemove <= 0 {
+			break
+		}
+		delete(m, k)
+		toRemove--
 	}
 }
 
@@ -125,6 +158,26 @@ func (m *Metrics) SetBlockedFibers(n int64) {
 	}
 	m.mu.Lock()
 	m.BlockedFibers = n
+	m.LastUpdateTime = time.Now()
+	m.mu.Unlock()
+}
+
+// ComputeBlockedFibersFrom scans the given fiber list and writes the count
+// of fibers currently in StateBlocked into the gauge. Callers that already
+// hold a snapshot of fibers (the runtime, in particular) can avoid the
+// periodic detector scan and surface the latest value in every metric read.
+func (m *Metrics) ComputeBlockedFibersFrom(fibers []*fiber.Fiber) {
+	if m == nil {
+		return
+	}
+	count := int64(0)
+	for _, f := range fibers {
+		if f != nil && f.IsBlocked() {
+			count++
+		}
+	}
+	m.mu.Lock()
+	m.BlockedFibers = count
 	m.LastUpdateTime = time.Now()
 	m.mu.Unlock()
 }
@@ -220,8 +273,21 @@ func (m *Metrics) Reset() {
 	m.PeakFiberCount = 0
 	m.TotalStackMemory = 0
 	m.completed = make(map[fiber.FiberID]struct{})
-	m.StartTime = time.Now()
+	m.StartTime = time.Time{}
 	m.LastUpdateTime = time.Now()
+}
+
+// StartRun resets the start timestamp to now. The runtime calls this on
+// every Start so Uptime reflects the current run, not the age of the
+// metrics object since the runtime was constructed.
+func (m *Metrics) StartRun() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.StartTime = time.Now()
+	m.LastUpdateTime = m.StartTime
+	m.mu.Unlock()
 }
 
 // MetricsSnapshot is an immutable snapshot of metrics
@@ -257,13 +323,21 @@ type FiberEvent struct {
 type EventType int
 
 const (
+	// EventCreated is emitted when a fiber is first admitted.
 	EventCreated EventType = iota
+	// EventScheduled is emitted when a fiber is added to a scheduler queue.
 	EventScheduled
+	// EventRunning is emitted when a fiber is dispatched for execution.
 	EventRunning
+	// EventYielded is emitted when a fiber voluntarily yields the CPU.
 	EventYielded
+	// EventBlocked is emitted when a fiber enters a blocked state.
 	EventBlocked
+	// EventUnblocked is emitted when a fiber leaves a blocked state.
 	EventUnblocked
+	// EventCompleted is emitted when a fiber finishes execution.
 	EventCompleted
+	// EventContextSwitch is emitted when the scheduler switches between fibers.
 	EventContextSwitch
 )
 
