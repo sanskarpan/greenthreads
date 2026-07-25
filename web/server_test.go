@@ -16,6 +16,7 @@ import (
 )
 
 func TestHealthAndReadinessEndpoints(t *testing.T) {
+	t.Parallel()
 	server := NewServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -40,6 +41,7 @@ func TestHealthAndReadinessEndpoints(t *testing.T) {
 }
 
 func TestWebSocketRejectsCrossOrigin(t *testing.T) {
+	t.Parallel()
 	server := NewServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -55,6 +57,7 @@ func TestWebSocketRejectsCrossOrigin(t *testing.T) {
 }
 
 func TestWebSocketMalformedMessageReturnsError(t *testing.T) {
+	t.Parallel()
 	server := NewServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -79,6 +82,7 @@ func TestWebSocketMalformedMessageReturnsError(t *testing.T) {
 }
 
 func TestWebSocketAuthToken(t *testing.T) {
+	t.Parallel()
 	server := NewServerWithConfig(nil, ServerConfig{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -94,6 +98,7 @@ func TestWebSocketAuthToken(t *testing.T) {
 }
 
 func TestReadyAfterRuntimeStart(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 1)
 	server := NewServer(rt)
 	ts := httptest.NewServer(server.Handler())
@@ -123,6 +128,7 @@ func writeWSMessage(conn *websocket.Conn, msgType string, payload map[string]int
 // producer. A full queue drops (with a log) instead of holding the broadcast
 // loop, so one slow client cannot stall delivery to other clients.
 func TestEnqueueDropsWhenFullAndNeverBlocks(t *testing.T) {
+	t.Parallel()
 	server := &Server{logger: slog.Default()}
 	cl := newClient(nil)
 
@@ -158,6 +164,7 @@ func TestEnqueueDropsWhenFullAndNeverBlocks(t *testing.T) {
 // the PongHandler resets the deadline. Before the fix (no pings), the idle
 // connection was closed at the read deadline.
 func TestPingKeepsIdleConnectionAlive(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 1)
 	server := NewServerWithConfig(rt, ServerConfig{
 		PingInterval:    100 * time.Millisecond,
@@ -212,6 +219,7 @@ func TestPingKeepsIdleConnectionAlive(t *testing.T) {
 // (i.e. when a token is configured), so operational counters are not exposed
 // to unauthenticated callers.
 func TestMetricsRequiresAuthWhenTokenConfigured(t *testing.T) {
+	t.Parallel()
 	server := NewServerWithConfig(nil, ServerConfig{AuthToken: "secret"})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -242,6 +250,7 @@ func TestMetricsRequiresAuthWhenTokenConfigured(t *testing.T) {
 // exposition is self-describing for Prometheus, and must expose the additional
 // counters that exist in the snapshot (steal, blocked, peak, etc.).
 func TestMetricsEndpointHasPrometheusMetadata(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 1)
 	server := NewServer(rt)
 	ts := httptest.NewServer(server.Handler())
@@ -279,6 +288,7 @@ func TestMetricsEndpointHasPrometheusMetadata(t *testing.T) {
 // TestSecurityHeadersAppliedToResponses is a regression guard for AUDIT ID 21:
 // every response carries defense-in-depth headers (CSP, nosniff, frame deny).
 func TestSecurityHeadersAppliedToResponses(t *testing.T) {
+	t.Parallel()
 	server := NewServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -304,6 +314,7 @@ func TestSecurityHeadersAppliedToResponses(t *testing.T) {
 // TestIsLoopbackAddress is a regression guard for AUDIT ID 20: the canonical
 // helper must classify loopback, wildcard, and external binds consistently.
 func TestIsLoopbackAddress(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		addr string
 		want bool
