@@ -19,6 +19,7 @@ import (
 //
 // Each subtest runs a tight loop so the intermittent race surfaces under -race.
 func TestCtxHandoffRace(t *testing.T) {
+	t.Parallel()
 	t.Run("FiberMutexLockCtx", func(t *testing.T) {
 		const iterations = 1000
 		for i := 0; i < iterations; i++ {
