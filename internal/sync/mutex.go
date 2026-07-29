@@ -29,8 +29,11 @@ func NewFiberMutex() *FiberMutex {
 
 // Lock acquires the mutex or waits for ownership to be handed off.
 func (fm *FiberMutex) Lock(currentFiber *fiber.Fiber) {
-	if fm == nil || currentFiber == nil {
-		return
+	if fm == nil {
+		panic("lock of nil fiber mutex")
+	}
+	if currentFiber == nil {
+		panic("fiber mutex lock requires a non-nil fiber")
 	}
 	fm.mu.Lock()
 	if !fm.locked {
@@ -194,8 +197,11 @@ func NewFiberRWMutex() *FiberRWMutex {
 
 // RLock acquires a shared read lock or waits behind active/pending writers.
 func (frw *FiberRWMutex) RLock(currentFiber *fiber.Fiber) {
-	if frw == nil || currentFiber == nil {
-		return
+	if frw == nil {
+		panic("rlock of nil fiber rwmutex")
+	}
+	if currentFiber == nil {
+		panic("fiber rwmutex rlock requires a non-nil fiber")
 	}
 	frw.mu.Lock()
 	if frw.writer == 0 && len(frw.writerQueue) == 0 {
@@ -296,8 +302,11 @@ func (frw *FiberRWMutex) RUnlock() {
 
 // Lock acquires exclusive ownership or waits behind readers and writers.
 func (frw *FiberRWMutex) Lock(currentFiber *fiber.Fiber) {
-	if frw == nil || currentFiber == nil {
-		return
+	if frw == nil {
+		panic("lock of nil fiber rwmutex")
+	}
+	if currentFiber == nil {
+		panic("fiber rwmutex lock requires a non-nil fiber")
 	}
 	frw.mu.Lock()
 	if frw.readers == 0 && frw.writer == 0 && len(frw.writerQueue) == 0 {

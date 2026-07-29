@@ -20,7 +20,8 @@ while IFS= read -r line; do
     continue
   fi
   if [[ ${#ref} -lt 40 ]]; then
-    echo "::warning::${owner_repo} uses short ref @${ref}; prefer a full 40-char commit SHA" >&2
+    echo "::error::${owner_repo} uses short ref @${ref}; pin to a full 40-char commit SHA" >&2
+    status=1
   fi
 done < <(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+[^[:space:]]+@' .github/workflows || true)
 

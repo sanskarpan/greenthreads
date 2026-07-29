@@ -153,18 +153,18 @@ func (rt *Runtime) isStopped() bool {
 }
 
 // Spawn validates, admits, and records one fiber. The fiber is registered in
-// rt.fibers and its creation metrics are recorded before it is published to
-// the scheduler, so a fast execution loop that pops and completes the fiber
-// before Spawn returns cannot produce a ghost fiber or inverted counters.
+// rt.fibers before it is published to the scheduler, so a fast execution loop
+// that pops and completes the fiber before Spawn returns cannot produce a
+// ghost fiber.
 //
 // If Stop is in progress the call fails without mutating state; the caller
 // must observe the error and not retry without re-checking IsRunning.
 //
-// The lifecycle admission check is a compare-and-swap on the stopped channel:
-// if the channel was open when we observed it, we win the right to publish,
-// and Stop will not be able to close the channel until we have inserted into
-// rt.fibers. This eliminates the Spawn/Stop race where Spawn returned success
-// against a stopped runtime.
+// Admission uses a check/act/re-check pattern: the runtime state is verified
+// before and after scheduling. If Stop completes between the two checks a
+// narrow window exists where Spawn may fail at the re-check after a valid
+// Schedule call, but it will always return an error (never silently succeed
+// against a stopped scheduler).
 func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error) {
 	if rt == nil {
 		return 0, fmt.Errorf("nil runtime")
@@ -187,23 +187,8 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 
 	f := fiber.NewFiber(fn, stackSize, name)
 
-	// Record creation metrics and the Created event before publishing so a
-	// race with completion cannot leave the fiber unaccounted.
-	rt.metrics.RecordFiberCreated(f.StackSize)
-	rt.eventTracker.RecordEvent(metrics.FiberEvent{
-		FiberID: f.ID, EventType: metrics.EventCreated, Timestamp: time.Now(),
-		Details: fmt.Sprintf("Created fiber: %s", name),
-	})
-	rt.metrics.RecordScheduleCall()
-	rt.eventTracker.RecordEvent(metrics.FiberEvent{
-		FiberID: f.ID, EventType: metrics.EventScheduled, Timestamp: time.Now(),
-		Details: "Fiber scheduled",
-	})
-
 	// Insert into rt.fibers before scheduling so a fast execution loop that
-	// pops the fiber sees it in the map. The map reaper in complete() is
-	// idempotent; if the fiber is no longer present (rare race during
-	// shutdown), delete is a no-op.
+	// pops the fiber sees it in the map.
 	rt.fibersMu.Lock()
 	rt.fibers[f.ID] = f
 	rt.fibersMu.Unlock()
@@ -215,11 +200,8 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 		return 0, fmt.Errorf("schedule fiber: %w", err)
 	}
 
-	// The scheduler.Schedule call above can block on a custom scheduler
-	// implementation (e.g., for admission back-pressure). When it returns
-	// the runtime may have been stopped, leaving the fiber in the
-	// scheduler queue with no dispatcher to run it. Re-check stopped
-	// state and roll back if necessary.
+	// Re-check stopped state. scheduler.Schedule can block on back-pressure
+	// and Stop may have completed in the meantime.
 	rt.mu.RLock()
 	stillRunning := rt.epoch > 0 && !rt.isStopped()
 	rt.mu.RUnlock()
@@ -230,6 +212,20 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 		rt.fibersMu.Unlock()
 		return 0, fmt.Errorf("runtime stopped during spawn")
 	}
+
+	// Record metrics only after the fiber is confirmed to be live in the
+	// scheduler. This prevents the rollback paths above from leaving
+	// ActiveFibers and TotalStackMemory inflated.
+	rt.metrics.RecordFiberCreated(f.StackSize)
+	rt.eventTracker.RecordEvent(metrics.FiberEvent{
+		FiberID: f.ID, EventType: metrics.EventCreated, Timestamp: time.Now(),
+		Details: fmt.Sprintf("Created fiber: %s", name),
+	})
+	rt.metrics.RecordScheduleCall()
+	rt.eventTracker.RecordEvent(metrics.FiberEvent{
+		FiberID: f.ID, EventType: metrics.EventScheduled, Timestamp: time.Now(),
+		Details: "Fiber scheduled",
+	})
 	return f.ID, nil
 }
 

@@ -267,15 +267,19 @@ func (fc *FiberChannel) removeReceiverLocked(waiter *channelReceiver) {
 	}
 }
 
-// TrySend attempts a transfer without waiting.
-func (fc *FiberChannel) TrySend(value interface{}) bool {
+// TrySend attempts a non-blocking transfer. It returns (true, nil) on success,
+// (false, nil) when the channel is full, and (false, ErrChannelClosed) when
+// the channel is closed. Callers must check the error to distinguish closed
+// from full; retrying on false without checking error will spin on a closed
+// channel.
+func (fc *FiberChannel) TrySend(value interface{}) (bool, error) {
 	if fc == nil {
-		return false
+		return false, fmt.Errorf("nil fiber channel")
 	}
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	if fc.closed {
-		return false
+		return false, ErrChannelClosed
 	}
 	if len(fc.receivers) > 0 {
 		receiver := fc.receivers[0]
@@ -284,13 +288,13 @@ func (fc *FiberChannel) TrySend(value interface{}) bool {
 		receiver.err = nil
 		receiver.fiber.Unblock()
 		close(receiver.ready)
-		return true
+		return true, nil
 	}
 	if len(fc.buffer) >= fc.capacity {
-		return false
+		return false, nil
 	}
 	fc.buffer = append(fc.buffer, value)
-	return true
+	return true, nil
 }
 
 // TryReceive returns a value only when one is immediately available.

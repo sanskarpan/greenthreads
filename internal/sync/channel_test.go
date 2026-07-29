@@ -105,25 +105,25 @@ func TestFiberChannelTrySend(t *testing.T) {
 
 	// nil channel
 	var nilCh *FiberChannel
-	if nilCh.TrySend("x") {
+	if ok, _ := nilCh.TrySend("x"); ok {
 		t.Fatal("nil TrySend should return false")
 	}
 
 	// closed channel
 	ch := NewFiberChannel(1)
 	ch.Close()
-	if ch.TrySend("x") {
-		t.Fatal("TrySend on closed channel should return false")
+	if ok, err := ch.TrySend("x"); ok || err != ErrChannelClosed {
+		t.Fatal("TrySend on closed channel should return false, ErrChannelClosed")
 	}
 
 	// buffered - success
 	ch2 := NewFiberChannel(1)
-	if !ch2.TrySend("a") {
+	if ok, err := ch2.TrySend("a"); !ok || err != nil {
 		t.Fatal("TrySend on buffered channel should succeed")
 	}
 
 	// buffer full - failure
-	if ch2.TrySend("b") {
+	if ok, err := ch2.TrySend("b"); ok || err != nil {
 		t.Fatal("TrySend on full buffer should fail")
 	}
 
@@ -140,7 +140,7 @@ func TestFiberChannelTrySend(t *testing.T) {
 	for ch3.RecvQueueSize() != 1 {
 		time.Sleep(time.Millisecond)
 	}
-	if !ch3.TrySend("direct") {
+	if ok, err := ch3.TrySend("direct"); !ok || err != nil {
 		t.Fatal("TrySend to waiting receiver should succeed")
 	}
 	if err := <-errCh; err != nil {
@@ -167,7 +167,7 @@ func TestFiberChannelTryReceive(t *testing.T) {
 	}
 
 	// from buffer
-	ch.TrySend("buffered")
+	_, _ = ch.TrySend("buffered")
 	v, ok := ch.TryReceive()
 	if !ok || v != "buffered" {
 		t.Fatalf("TryReceive got %v, %v, want buffered, true", v, ok)
@@ -218,8 +218,8 @@ func TestFiberChannelLen(t *testing.T) {
 	if ch.Len() != 0 {
 		t.Fatal("empty channel Len should be 0")
 	}
-	ch.TrySend("a")
-	ch.TrySend("b")
+	_, _ = ch.TrySend("a")
+	_, _ = ch.TrySend("b")
 	if ch.Len() != 2 {
 		t.Fatalf("Len after 2 sends = %d, want 2", ch.Len())
 	}
@@ -300,7 +300,7 @@ func TestFiberChannelAdmitSenderLocked(t *testing.T) {
 	// Create a full buffered channel with a blocked sender.
 	// Receiving from the buffer should admit the sender.
 	ch := NewFiberChannel(1)
-	ch.TrySend("fill")
+	_, _ = ch.TrySend("fill")
 
 	sender := fiber.NewFiber(func() {}, fiber.DefaultStackSize, "sender")
 	go func() { _ = ch.Send("admitted", sender) }()

@@ -337,6 +337,22 @@ func (s *BaseScheduler) MarkCompleted(fiberID fiber.FiberID) {
 	s.completed[fiberID] = struct{}{}
 	s.totalCompleted++
 	_ = s.removeLocked(fiberID)
+	// Prevent unbounded growth: prune the completed set when it exceeds
+	// 4096 entries by discarding the oldest half. The only consequence
+	// is that a duplicate MarkCompleted for a pruned ID would add +1 to
+	// totalCompleted, which is negligible compared to the memory saved.
+	const completedMax = 4096
+	const completedTarget = 2048
+	if len(s.completed) > completedMax {
+		count := 0
+		for id := range s.completed {
+			delete(s.completed, id)
+			count++
+			if count >= completedMax-completedTarget {
+				break
+			}
+		}
+	}
 }
 
 func (s *BaseScheduler) recordSwitch() {

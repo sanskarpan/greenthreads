@@ -107,7 +107,7 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 		}
 		if f.IsBlocked() {
 			blocked = append(blocked, f)
-		} else if f.IsRunnable() {
+		} else if f.IsRunnable() || f.State == fiber.StateRunning {
 			runnable++
 		}
 	}
@@ -119,7 +119,7 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 
 	dd.mu.Lock()
 	defer dd.mu.Unlock()
-	if runnable > 0 {
+	if !noRunnable {
 		dd.lastProgress = now
 	}
 	// Update the blocked-fiber gauge from the authoritative fiber scan so

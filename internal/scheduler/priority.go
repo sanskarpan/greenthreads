@@ -74,6 +74,16 @@ func (s *PriorityScheduler) MarkCompleted(fiberID fiber.FiberID) {
 	}
 	s.completed[fiberID] = struct{}{}
 	s.totalCompleted++
+	if len(s.completed) > 4096 {
+		count := 0
+		for id := range s.completed {
+			delete(s.completed, id)
+			count++
+			if count >= 2048 {
+				break
+			}
+		}
+	}
 	filtered := (*s.pqueue)[:0]
 	for _, f := range *s.pqueue {
 		if f.ID != fiberID {
@@ -117,6 +127,42 @@ func (s *PriorityScheduler) UpdatePriority(id fiber.FiberID, priority int) error
 		}
 	}
 	return fmt.Errorf("fiber %d not in priority queue", id)
+}
+
+// Remove removes a fiber from the priority queue by ID. It overrides
+// BaseScheduler.Remove which only scans the base run queue (unused by
+// PriorityScheduler). Returns an error if the fiber is not found.
+func (s *PriorityScheduler) Remove(fiberID fiber.FiberID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, f := range *s.pqueue {
+		if f.ID == fiberID {
+			filtered := make(PriorityQueue, 0, len(*s.pqueue)-1)
+			filtered = append(filtered, (*s.pqueue)[:i]...)
+			filtered = append(filtered, (*s.pqueue)[i+1:]...)
+			*s.pqueue = filtered
+			heap.Init(s.pqueue)
+			return nil
+		}
+	}
+	return fmt.Errorf("fiber %d not found in priority queue", fiberID)
+}
+
+// GetStats returns scheduler statistics with the correct queue depth for
+// the priority heap. Overrides BaseScheduler.GetStats which reads the
+// unused base runQueue.
+func (s *PriorityScheduler) GetStats() SchedulerStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return SchedulerStats{
+		TotalScheduled:   s.totalScheduled,
+		TotalCompleted:   s.totalCompleted,
+		TotalBlocked:     s.totalBlocked,
+		CurrentRunQueue:  s.pqueue.Len(),
+		CurrentBlocked:   len(s.blockedQueue),
+		ContextSwitches:  s.contextSwitches,
+		LastScheduleTime: s.lastScheduleTime,
+	}
 }
 
 // Reheapify rebuilds the heap after an external SetPriority on a fiber that

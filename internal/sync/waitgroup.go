@@ -63,8 +63,11 @@ func (fwg *FiberWaitGroup) Done() error {
 
 // Wait blocks until the counter reaches zero.
 func (fwg *FiberWaitGroup) Wait(currentFiber *fiber.Fiber) {
-	if fwg == nil || currentFiber == nil {
-		return
+	if fwg == nil {
+		panic("wait on nil fiber waitgroup")
+	}
+	if currentFiber == nil {
+		panic("fiber waitgroup wait requires a non-nil fiber")
 	}
 	fwg.mu.Lock()
 	if fwg.counter == 0 {
@@ -180,8 +183,11 @@ func NewFiberSemaphore(permits int) *FiberSemaphore {
 
 // Acquire consumes a permit or waits for a release.
 func (fs *FiberSemaphore) Acquire(currentFiber *fiber.Fiber) {
-	if fs == nil || currentFiber == nil {
-		return
+	if fs == nil {
+		panic("acquire on nil fiber semaphore")
+	}
+	if currentFiber == nil {
+		panic("fiber semaphore acquire requires a non-nil fiber")
 	}
 	fs.mu.Lock()
 	if fs.permits > 0 {
@@ -278,7 +284,10 @@ func (fs *FiberSemaphore) Release() {
 		close(waiter.ready)
 		return
 	}
-	if fs.permits < fs.maxPermits {
+	// Only clamp when maxPermits > 0 to allow signal-before-wait on a
+	// zero-initial-permit semaphore. A zero-initial semaphore is used
+	// as a binary signal; Release before Acquire must not be dropped.
+	if fs.maxPermits == 0 || fs.permits < fs.maxPermits {
 		fs.permits++
 	}
 }

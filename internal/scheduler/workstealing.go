@@ -190,6 +190,57 @@ func (s *WorkStealingScheduler) steal(fromWorker int) (*fiber.Fiber, error) {
 	return nil, fmt.Errorf("no work to steal")
 }
 
+// Remove removes a fiber from any worker local queue or the global queue.
+// It overrides BaseScheduler.Remove which only scans the base run queue
+// (unused by WorkStealingScheduler).
+func (s *WorkStealingScheduler) Remove(fiberID fiber.FiberID) error {
+	// Check worker local queues
+	for _, w := range s.workers {
+		w.mu.Lock()
+		for i, f := range w.localQueue {
+			if f.ID == fiberID {
+				w.localQueue = append(w.localQueue[:i], w.localQueue[i+1:]...)
+				w.mu.Unlock()
+				return nil
+			}
+		}
+		w.mu.Unlock()
+	}
+	// Check global queue
+	s.globalMu.Lock()
+	defer s.globalMu.Unlock()
+	for i, f := range s.globalQueue {
+		if f.ID == fiberID {
+			s.globalQueue = append(s.globalQueue[:i], s.globalQueue[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("fiber %d not found in work-stealing queues", fiberID)
+}
+
+// GetStats returns scheduler statistics with the correct queue depth
+// across all worker queues. Overrides BaseScheduler.GetStats which reads
+// the unused base runQueue.
+func (s *WorkStealingScheduler) GetStats() SchedulerStats {
+	s.mu.RLock()
+	total := s.totalScheduled
+	completed := s.totalCompleted
+	blocked := s.totalBlocked
+	switches := s.contextSwitches
+	lastSched := s.lastScheduleTime
+	s.mu.RUnlock()
+
+	queueDepth := s.Size()
+	return SchedulerStats{
+		TotalScheduled:   total,
+		TotalCompleted:   completed,
+		TotalBlocked:     blocked,
+		CurrentRunQueue:  queueDepth,
+		ContextSwitches:  switches,
+		LastScheduleTime: lastSched,
+	}
+}
+
 // Size returns the total number of fibers across all queues
 func (s *WorkStealingScheduler) Size() int {
 	s.globalMu.RLock()
@@ -268,6 +319,16 @@ func (s *WorkStealingScheduler) MarkCompleted(fiberID fiber.FiberID) {
 	}
 	s.completed[fiberID] = struct{}{}
 	s.totalCompleted++
+	if len(s.completed) > 4096 {
+		count := 0
+		for id := range s.completed {
+			delete(s.completed, id)
+			count++
+			if count >= 2048 {
+				break
+			}
+		}
+	}
 	s.mu.Unlock()
 
 	// Search worker local queues under each worker's lock. The worker

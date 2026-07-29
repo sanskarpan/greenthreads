@@ -170,17 +170,25 @@ func (f *Fiber) PanicStack() []byte {
 // Block marks a fiber as waiting on a synchronization object.
 func (f *Fiber) Block(reason string, on interface{}) {
 	f.mu.Lock()
+	if f.completion {
+		f.mu.Unlock()
+		return
+	}
 	f.State = StateBlocked
 	f.BlockReason = reason
 	f.BlockedOn = on
 	f.mu.Unlock()
 }
 
-// Unblock makes a blocked fiber observable as ready.
+// Unblock makes a blocked fiber observable as ready (or running if already started).
 func (f *Fiber) Unblock() {
 	f.mu.Lock()
 	if !f.completion {
-		f.State = StateReady
+		if f.runStarted {
+			f.State = StateRunning
+		} else {
+			f.State = StateReady
+		}
 	}
 	f.BlockReason = ""
 	f.BlockedOn = nil

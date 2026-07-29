@@ -247,7 +247,12 @@ func (m *Metrics) GetSnapshot() MetricsSnapshot {
 		StealSuccessRate:     m.StealSuccessRate,
 		PeakFiberCount:       m.PeakFiberCount,
 		TotalStackMemory:     m.TotalStackMemory,
-		Uptime:               time.Since(m.StartTime),
+		Uptime: func() time.Duration {
+			if m.StartTime.IsZero() {
+				return 0
+			}
+			return time.Since(m.StartTime)
+		}(),
 		LastUpdateTime:       m.LastUpdateTime,
 	}
 }

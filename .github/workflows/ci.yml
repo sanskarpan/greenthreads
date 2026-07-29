@@ -31,7 +31,7 @@ jobs:
         with:
           version: v1.64
       - name: Coverage gate
-        run: make coverage COVERAGE_MIN=45
+        run: make coverage COVERAGE_MIN=80
       - name: Benchmark regression gate
         run: bash scripts/check_benchmarks.sh
       - name: Fuzz smoke (bounded)
