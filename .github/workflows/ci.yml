@@ -14,8 +14,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version-file: go.mod
-          check-latest: true
+          go-version: '1.24'
       - name: Build
         run: go build -trimpath ./...
       - name: Unit tests
@@ -36,9 +35,21 @@ jobs:
         run: bash scripts/check_benchmarks.sh
       - name: Fuzz smoke (bounded)
         run: |
-          go test -run=^$$ -fuzz=FuzzStackPopNeverPanics -fuzztime=15s ./internal/fiber
-          go test -run=^$$ -fuzz=FuzzPayloadIntNeverPanics -fuzztime=15s ./web
-          go test -run=^$$ -fuzz=FuzzPayloadStringNeverPanics -fuzztime=15s ./web
+          # internal/fiber targets
+          go test -run=^$ -fuzz=FuzzStackPopNeverPanics  -fuzztime=10s ./internal/fiber &
+          go test -run=^$ -fuzz=FuzzNewFiber             -fuzztime=10s ./internal/fiber &
+          go test -run=^$ -fuzz=FuzzFiberSetPriority     -fuzztime=10s ./internal/fiber &
+          # internal/sync targets
+          go test -run=^$ -fuzz=FuzzFiberChannelSendReceive -fuzztime=10s ./internal/sync &
+          go test -run=^$ -fuzz=FuzzFiberMutexLockUnlock    -fuzztime=10s ./internal/sync &
+          go test -run=^$ -fuzz=FuzzFiberWaitGroupAddDone   -fuzztime=10s ./internal/sync &
+          go test -run=^$ -fuzz=FuzzFiberMutexConcurrent    -fuzztime=10s ./internal/sync &
+          go test -run=^$ -fuzz=FuzzFiberChannelConcurrent  -fuzztime=10s ./internal/sync &
+          # web targets
+          go test -run=^$ -fuzz=FuzzPayloadStringNeverPanics -fuzztime=10s ./web &
+          go test -run=^$ -fuzz=FuzzPayloadIntNeverPanics    -fuzztime=10s ./web &
+          go test -run=^$ -fuzz=FuzzIsLoopbackAddress        -fuzztime=10s ./web &
+          wait
       - name: Dependency vulnerability scan
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
@@ -48,6 +59,24 @@ jobs:
         uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
         with:
           args: ./...
+
+  test-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26'
+      - name: Unit tests (Linux with race detector)
+        if: runner.os == 'Linux'
+        run: go test -race -timeout=300s ./...
+      - name: Unit tests (macOS)
+        if: runner.os == 'macOS'
+        run: go test -timeout=300s ./...
 
   container:
     runs-on: ubuntu-latest
@@ -60,7 +89,7 @@ jobs:
       - name: Build image
         run: docker build --tag greenthreads:${{ github.sha }} .
       - name: Scan image
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: greenthreads:${{ github.sha }}
           format: table
