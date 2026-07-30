@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func TestHealthAndReadinessEndpoints(t *testing.T) {
@@ -129,7 +128,7 @@ func writeWSMessage(conn *websocket.Conn, msgType string, payload map[string]int
 // loop, so one slow client cannot stall delivery to other clients.
 func TestEnqueueDropsWhenFullAndNeverBlocks(t *testing.T) {
 	t.Parallel()
-	server := &Server{logger: slog.Default()}
+	server := NewServer(nil)
 	cl := newClient(nil)
 
 	for i := 0; i < clientSendBuffer; i++ {

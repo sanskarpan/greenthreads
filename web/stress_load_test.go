@@ -276,6 +276,7 @@ func TestStressSoakLoad(t *testing.T) {
 // TestStressRapidConnectDisconnect rapidly connects and closes 50 WS clients
 // with no init. Then verifies a real client can still init+spawn.
 func TestStressRapidConnectDisconnect(t *testing.T) {
+	t.Parallel()
 	server := NewServer(nil)
 	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
@@ -332,6 +333,7 @@ func TestStressRapidConnectDisconnect(t *testing.T) {
 // TestStressBoundaryPayloads sends spawn/init payloads at the edges of the
 // documented limits and verifies each returns success or error as expected.
 func TestStressBoundaryPayloads(t *testing.T) {
+	t.Parallel()
 	server := NewServerWithConfig(nil, ServerConfig{
 		MessagesPerSecond: 10000,
 	})
@@ -375,25 +377,28 @@ func TestStressBoundaryPayloads(t *testing.T) {
 	// The duration=60000 case keeps a fiber alive for 60s. That's fine for
 	// server responsiveness; we just won't wait for it. Track successes.
 	for _, c := range cases {
-		writeJSONMsg(t, conn, c.typ, c.payload)
-		msg, err := readMsg(conn, 3*time.Second)
-		if err != nil {
-			t.Errorf("%s: read response: %v", c.name, err)
-			continue
-		}
-		got, _ := msg["type"].(string)
-		// Skip broadcast "update"/"stateUpdate" messages, read next.
-		for got == "update" || got == "stateUpdate" {
-			msg, err = readMsg(conn, 3*time.Second)
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			writeJSONMsg(t, conn, c.typ, c.payload)
+			msg, err := readMsg(conn, 3*time.Second)
 			if err != nil {
-				t.Errorf("%s: read response (skip): %v", c.name, err)
-				break
+				t.Errorf("%s: read response: %v", c.name, err)
+				return
 			}
-			got, _ = msg["type"].(string)
-		}
-		if got != c.want {
-			t.Errorf("%s: got type %q, want %q (payload=%v)", c.name, got, c.want, c.payload)
-		}
+			got, _ := msg["type"].(string)
+			// Skip broadcast "update"/"stateUpdate" messages, read next.
+			for got == "update" || got == "stateUpdate" {
+				msg, err = readMsg(conn, 3*time.Second)
+				if err != nil {
+					t.Errorf("%s: read response (skip): %v", c.name, err)
+					return
+				}
+				got, _ = msg["type"].(string)
+			}
+			if got != c.want {
+				t.Errorf("%s: got type %q, want %q (payload=%v)", c.name, got, c.want, c.payload)
+			}
+		})
 	}
 
 	// Server still responsive after boundary payloads.
@@ -410,6 +415,7 @@ func TestStressBoundaryPayloads(t *testing.T) {
 // TestStressNonLoopbackAuth verifies the auth boundary on /ws and /metrics when
 // an AuthToken is configured.
 func TestStressNonLoopbackAuth(t *testing.T) {
+	t.Parallel()
 	server := NewServerWithConfig(nil, ServerConfig{AuthToken: "testsecret"})
 	addr := randomAddr(t)
 	cleanup := startServerOn(t, server, addr)
@@ -459,6 +465,7 @@ func TestStressNonLoopbackAuth(t *testing.T) {
 // TestStressSpawnToLimit verifies the per-runtime fiber cap is enforced on
 // concurrently-active fibers and lifts once they complete.
 func TestStressSpawnToLimit(t *testing.T) {
+	t.Parallel()
 	server := NewServerWithConfig(nil, ServerConfig{
 		MaxFibersPerRuntime: 5,
 		MessagesPerSecond:   10000,

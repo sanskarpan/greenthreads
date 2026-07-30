@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 type waitGroupWaiter struct {
@@ -53,7 +53,10 @@ func (fwg *FiberWaitGroup) Add(delta int) error {
 	return nil
 }
 
-// Done decrements the counter by one.
+// Done decrements the counter by one. Returns an error if the counter would
+// go negative (counter underflow). Note: when used with defer, the error is
+// silently discarded — ensure WaitGroup usage is balanced. Consider using
+// Add(-1) in error-handling paths where the error must be observed.
 func (fwg *FiberWaitGroup) Done() error {
 	if fwg == nil {
 		return fmt.Errorf("nil waitgroup")
@@ -127,7 +130,9 @@ func (fwg *FiberWaitGroup) WaitCtx(ctx context.Context, currentFiber *fiber.Fibe
 func (fwg *FiberWaitGroup) removeWaiterLocked(waiter *waitGroupWaiter) {
 	for i, w := range fwg.waitQueue {
 		if w == waiter {
-			fwg.waitQueue = append(fwg.waitQueue[:i], fwg.waitQueue[i+1:]...)
+			copy(fwg.waitQueue[i:], fwg.waitQueue[i+1:])
+			fwg.waitQueue[len(fwg.waitQueue)-1] = nil // clear now-unreachable tail slot
+			fwg.waitQueue = fwg.waitQueue[:len(fwg.waitQueue)-1]
 			return
 		}
 	}
@@ -167,9 +172,11 @@ type semaphoreWaiter struct {
 	ready chan struct{}
 }
 
-// NewFiberSemaphore creates a semaphore with permits available immediately.
-// permits is recorded as the maximum; Release will not grow available permits
-// above this value.
+// NewFiberSemaphore creates a counting semaphore with the given initial and maximum
+// permit count. A maxPermits of 0 creates an unbounded-release semaphore: each
+// Release() call increments the permit count, and N Release() calls before any
+// Acquire() allow N subsequent non-blocking acquisitions. This is the
+// signal-before-wait pattern; use it for one-shot event notification.
 func NewFiberSemaphore(permits int) *FiberSemaphore {
 	if permits < 0 {
 		permits = 0
@@ -249,7 +256,9 @@ func (fs *FiberSemaphore) AcquireCtx(ctx context.Context, currentFiber *fiber.Fi
 func (fs *FiberSemaphore) removeWaiterLocked(waiter *semaphoreWaiter) {
 	for i, w := range fs.waitQueue {
 		if w == waiter {
-			fs.waitQueue = append(fs.waitQueue[:i], fs.waitQueue[i+1:]...)
+			copy(fs.waitQueue[i:], fs.waitQueue[i+1:])
+			fs.waitQueue[len(fs.waitQueue)-1] = nil // clear now-unreachable tail slot
+			fs.waitQueue = fs.waitQueue[:len(fs.waitQueue)-1]
 			return
 		}
 	}
@@ -279,6 +288,7 @@ func (fs *FiberSemaphore) Release() {
 	defer fs.mu.Unlock()
 	if len(fs.waitQueue) > 0 {
 		waiter := fs.waitQueue[0]
+		fs.waitQueue[0] = nil // clear GC reference before slicing
 		fs.waitQueue = fs.waitQueue[1:]
 		waiter.fiber.Unblock()
 		close(waiter.ready)

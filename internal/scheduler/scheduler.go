@@ -2,12 +2,18 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
+
+// ErrNoFibers is returned by Next() when there are no fibers ready to run.
+// Callers can check for this specific error with errors.Is instead of string
+// comparison, enabling efficient fast-path detection in the runtime.
+var ErrNoFibers = errors.New("no fibers in run queue")
 
 // SchedulerType represents the type of scheduler
 type SchedulerType int
@@ -107,7 +113,12 @@ type BaseScheduler struct {
 	runQueue      []*fiber.Fiber
 	blockedQueue  []*fiber.Fiber
 	running       bool
-	mu            sync.RWMutex
+	// stopped is set to true when Stop() is called. Once stopped, Schedule()
+	// and Next() reject new work. This is distinct from !running (which is also
+	// true before Start() is called) so that callers do not need to call Start()
+	// before using the scheduler in tests or simple usage patterns.
+	stopped bool
+	mu      sync.RWMutex
 
 	// completed tracks which fiber IDs have already been recorded as
 	// completed. It is the basis for MarkCompleted idempotence so the
@@ -139,6 +150,13 @@ func NewBaseScheduler(name string, schedulerType SchedulerType) *BaseScheduler {
 func (s *BaseScheduler) Schedule(f *fiber.Fiber) error {
 	if f == nil {
 		return fmt.Errorf("cannot schedule nil fiber")
+	}
+
+	s.mu.RLock()
+	stopped := s.stopped
+	s.mu.RUnlock()
+	if stopped {
+		return fmt.Errorf("scheduler stopped")
 	}
 
 	s.mu.Lock()
@@ -230,6 +248,9 @@ func (s *BaseScheduler) Start() error {
 	}
 
 	s.running = true
+	// Clear stopped so that Schedule/Next accept new work after a Stop/Start
+	// cycle that does not go through Reset/Clear (which also clears stopped).
+	s.stopped = false
 	return nil
 }
 
@@ -243,17 +264,21 @@ func (s *BaseScheduler) Stop() error {
 	}
 
 	s.running = false
+	s.stopped = true
 	return nil
 }
 
 // Clear empties all queues and resets statistics. It is called by
 // Runtime.Reset so stale fibers from a prior run are not re-dispatched.
+// It also resets the stopped flag so the scheduler can be reused after a
+// Reset/Clear without needing to call Start() again.
 func (s *BaseScheduler) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runQueue = make([]*fiber.Fiber, 0)
 	s.blockedQueue = make([]*fiber.Fiber, 0)
 	s.completed = make(map[fiber.FiberID]struct{})
+	s.stopped = false
 	s.totalScheduled = 0
 	s.totalCompleted = 0
 	s.totalBlocked = 0
@@ -358,4 +383,39 @@ func (s *BaseScheduler) MarkCompleted(fiberID fiber.FiberID) {
 func (s *BaseScheduler) recordSwitch() {
 	s.contextSwitches++
 	s.lastScheduleTime = time.Now()
+}
+
+// filterFinishedInPlace compacts queue in-place, removing finished fibers
+// without allocating a new backing array. Nil sentinels are written to the
+// tail to release GC references. This replaces the per-scheduler
+// filterFinished helpers that each allocated a fresh slice.
+// NewScheduler creates the scheduler implementation for the given type.
+func NewScheduler(t SchedulerType) Scheduler {
+	switch t {
+	case TypeFIFO:
+		return NewFIFOScheduler()
+	case TypeRoundRobin:
+		return NewRoundRobinScheduler(10 * time.Millisecond)
+	case TypePriority:
+		return NewPriorityScheduler()
+	case TypeWorkStealing:
+		return NewWorkStealingScheduler(4)
+	default:
+		return NewFIFOScheduler()
+	}
+}
+
+func filterFinishedInPlace(queue []*fiber.Fiber) []*fiber.Fiber {
+	n := 0
+	for _, f := range queue {
+		if !f.IsFinished() {
+			queue[n] = f
+			n++
+		}
+	}
+	// Nil out the tail to release GC references.
+	for i := n; i < len(queue); i++ {
+		queue[i] = nil
+	}
+	return queue[:n]
 }

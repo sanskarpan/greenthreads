@@ -51,6 +51,35 @@ produce a generic error, so a process exit indicates an unrecovered defect or
 host-level failure. Preserve logs, the image digest, and the failing message
 shape for a regression test.
 
+### Graceful Rolling Restart
+1. Send SIGTERM to the running process. The server has a 10-second shutdown deadline.
+2. Wait for /readyz to return 503 on the old pod (runtime stopped).
+3. Start the new pod. Wait for /readyz to return 200.
+4. Cut traffic to the new pod.
+In-flight fibers have up to 10 seconds to complete during shutdown. Long-running fibers
+may be abandoned; they will be logged at WARN level on timeout.
+
+### Fiber Appears Stuck / SY-2 Hard Deadlock
+Symptom: greenthreads_fibers_blocked == numWorkers, no context switches for >5s.
+Diagnosis: all workers are blocked on sync primitives waiting for an unblocked sender/releaser.
+This is an unrecoverable deadlock. The deadlock detector will log it.
+Recovery: restart the process. Increase numWorkers above the max concurrent blocked fibers.
+Prevention: ensure numWorkers > max_simultaneously_blocked_fibers at all times.
+
+### Fiber Panic Loop
+Symptom: greenthreads_fiber_panics_total increasing, no visible errors in logs at INFO.
+Set LOG_LEVEL=DEBUG to see panic details (logged at ERROR by the runtime).
+Check fiber event history via the WebSocket getState command: look for "Fiber failed" events.
+
+### Alert Thresholds (Example Prometheus Rules)
+- alert: GreenthreadsDeadlock
+  expr: greenthreads_fibers_blocked >= on() greenthreads_runtime_running * 4  (adjust numWorkers)
+  for: 6s
+- alert: GreenthreadsFiberPanics
+  expr: rate(greenthreads_fiber_panics_total[5m]) > 0
+- alert: GreenthreadsHighMemory
+  expr: go_memstats_alloc_bytes > 512 * 1024 * 1024  # 512MB
+
 ## Escalation
 
 The on-call engineer owns first response, traffic isolation, and rollback. The
@@ -58,3 +87,17 @@ runtime maintainer owns scheduler, fiber, and synchronization defects. The
 security owner owns token, origin, dependency, and image findings. Escalate a
 critical incident to the service owner and security owner immediately; attach
 the image digest, request ID, timestamps, metrics snapshot, and reproduction.
+
+### Enabling TLS
+
+Set both `-tls-cert` and `-tls-key` flags (or `GREENTHREADS_TLS_CERT` and
+`GREENTHREADS_TLS_KEY` environment variables) to enable TLS.
+
+Example:
+```
+./server -addr :8443 -tls-cert /etc/ssl/certs/server.crt -tls-key /etc/ssl/private/server.key
+```
+
+Without TLS, the auth token and all WebSocket frames are sent in cleartext. In production,
+either enable TLS directly or place the server behind a TLS-terminating reverse proxy
+(nginx, caddy, AWS ALB). The `GREENTHREADS_AUTH_TOKEN` must be set in both cases.

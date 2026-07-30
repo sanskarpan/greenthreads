@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 const maxDeadlockHistory = 100
@@ -93,11 +93,11 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 	// runnable, every runtime would look partially unblocked forever and
 	// no deadlock suspicion would ever fire. Exclude it explicitly.
 	mainID := fiber.FiberID(0)
-	rt.mu.RLock()
+	rt.mainFiberMu.RLock()
 	if rt.mainFiber != nil {
 		mainID = rt.mainFiber.ID
 	}
-	rt.mu.RUnlock()
+	rt.mainFiberMu.RUnlock()
 	fibers := rt.GetAllFibers()
 	blocked := make([]*fiber.Fiber, 0)
 	runnable := 0

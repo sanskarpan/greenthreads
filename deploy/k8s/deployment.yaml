@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: greenthreads
+  labels:
+    app: greenthreads
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: greenthreads
+  template:
+    metadata:
+      labels:
+        app: greenthreads
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: greenthreads
+        image: greenthreads:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: GREENTHREADS_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: greenthreads-secrets
+              key: auth-token
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: GREENTHREADS_MAX_CLIENTS
+          value: "64"
+        - name: GREENTHREADS_MAX_FIBERS
+          value: "1000"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            # PERF-11: At 64KB/fiber and 1000 max fibers: 64MB stack + 256MB base = 320MB.
+            # Adjust GREENTHREADS_MAX_FIBERS if increasing this limit.
+            memory: "512Mi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

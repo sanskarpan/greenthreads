@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 func TestFiberWaitGroupRejectsNegativeWithoutMutation(t *testing.T) {

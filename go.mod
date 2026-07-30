@@ -1,4 +1,4 @@
-module github.com/sanskar/greenthreads
+module github.com/sanskarpan/greenthreads
 
 go 1.21
 

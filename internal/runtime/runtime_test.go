@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func TestNewRuntime(t *testing.T) {
@@ -113,7 +113,14 @@ func TestRuntimeMultipleFibers(t *testing.T) {
 		}
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := rt.GetMetrics()
+		if snap.TotalFibersCompleted >= 5 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	<-mutex
 	if count != 5 {
@@ -237,7 +244,7 @@ func TestRuntimeReset(t *testing.T) {
 		t.Fatal("spawn should fail before runtime start")
 	}
 
-	rt.Reset()
+	_ = rt.Reset()
 
 	fibers := rt.GetAllFibers()
 
@@ -256,27 +263,30 @@ func TestRuntimeDifferentSchedulers(t *testing.T) {
 	}
 
 	for _, sType := range schedulerTypes {
-		rt := NewRuntime(sType, 4)
-		if err := rt.Start(); err != nil {
-			t.Fatal(err)
-		}
+		sType := sType
+		t.Run(sType.String(), func(t *testing.T) {
+			t.Parallel()
+			rt := NewRuntime(sType, 4)
+			if err := rt.Start(); err != nil {
+				t.Fatal(err)
+			}
 
-		done := make(chan struct{})
-		if _, err := rt.Spawn(func() {
-			close(done)
-		}, "test"); err != nil {
-			t.Fatal(err)
-		}
+			done := make(chan struct{})
+			if _, err := rt.Spawn(func() {
+				close(done)
+			}, "test"); err != nil {
+				t.Fatal(err)
+			}
 
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("fiber not executed with scheduler type %s", sType)
-		}
-		if err := rt.Stop(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("fiber not executed with scheduler type %s", sType)
+			}
+			if err := rt.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -500,7 +510,7 @@ func TestResetClearsSchedulerQueues(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_ = rt.Stop(ctx) // Expected: timeout because fibers are stuck; that's fine for this test.
-	rt.Reset()
+	_ = rt.Reset()
 
 	// After Reset, the scheduler should have no fibers queued.
 	if got := rt.GetScheduler().Size(); got != 0 {

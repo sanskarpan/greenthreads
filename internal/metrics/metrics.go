@@ -5,8 +5,79 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
+
+// LatencyBucket is one bucket in a fiber run-time histogram.
+type LatencyBucket struct {
+	Le    time.Duration // upper bound (inclusive)
+	Count int64
+}
+
+// LatencyHistogram tracks fiber run-time distribution.
+// Buckets are at 1ms, 10ms, 100ms, 1s, 10s, 60s, and +Inf.
+type LatencyHistogram struct {
+	buckets []LatencyBucket
+	sum     time.Duration
+	count   int64
+	mu      sync.Mutex
+}
+
+var histogramBounds = []time.Duration{
+	1 * time.Millisecond,
+	10 * time.Millisecond,
+	100 * time.Millisecond,
+	1 * time.Second,
+	10 * time.Second,
+	60 * time.Second,
+}
+
+// NewLatencyHistogram creates a histogram with standard fiber-latency buckets.
+func NewLatencyHistogram() *LatencyHistogram {
+	buckets := make([]LatencyBucket, len(histogramBounds)+1)
+	for i, b := range histogramBounds {
+		buckets[i] = LatencyBucket{Le: b}
+	}
+	buckets[len(histogramBounds)] = LatencyBucket{Le: time.Duration(1<<63 - 1)} // +Inf
+	return &LatencyHistogram{buckets: buckets}
+}
+
+// Record adds one observation to the histogram.
+func (h *LatencyHistogram) Record(d time.Duration) {
+	h.mu.Lock()
+	h.sum += d
+	h.count++
+	for i := range h.buckets {
+		if d <= h.buckets[i].Le {
+			// Increment this bucket and all higher buckets (cumulative).
+			for j := i; j < len(h.buckets); j++ {
+				h.buckets[j].Count++
+			}
+			break
+		}
+	}
+	h.mu.Unlock()
+}
+
+// Snapshot returns a copy of the histogram state.
+func (h *LatencyHistogram) Snapshot() (buckets []LatencyBucket, sum time.Duration, count int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]LatencyBucket, len(h.buckets))
+	copy(out, h.buckets)
+	return out, h.sum, h.count
+}
+
+// counterOffset accumulates the cumulative counter values across resets so
+// that Prometheus counters remain monotonically increasing even when Reset()
+// is called between test runs or scheduler restarts.
+type counterOffset struct {
+	fibersCreated   int64
+	fibersCompleted int64
+	contextSwitches int64
+	yields          int64
+	scheduleCalls   int64
+}
 
 // Metrics tracks runtime performance metrics
 type Metrics struct {
@@ -20,6 +91,9 @@ type Metrics struct {
 	TotalContextSwitches int64
 	TotalScheduleCalls   int64
 	TotalYields          int64
+
+	// Panic counter (incremented via RecordFiberPanic)
+	TotalFiberPanics int64
 
 	// Timing statistics
 	AverageRunTime  time.Duration
@@ -39,32 +113,35 @@ type Metrics struct {
 	StartTime      time.Time
 	LastUpdateTime time.Time
 
-	mu        sync.RWMutex
-	completed map[fiber.FiberID]struct{}
+	FiberRunHistogram *LatencyHistogram
+
+	mu          sync.RWMutex
+	completed   map[fiber.FiberID]struct{}
+	resetOffset counterOffset
 }
 
 // NewMetrics creates a new metrics instance
 func NewMetrics() *Metrics {
 	return &Metrics{
-		StartTime:      time.Now(),
-		LastUpdateTime: time.Now(),
-		completed:      make(map[fiber.FiberID]struct{}),
+		StartTime:         time.Now(),
+		LastUpdateTime:    time.Now(),
+		completed:         make(map[fiber.FiberID]struct{}),
+		FiberRunHistogram: NewLatencyHistogram(),
 	}
 }
 
 // RecordFiberCreated records that a fiber was created
 func (m *Metrics) RecordFiberCreated(stackSize int) {
+	now := time.Now() // outside lock — PERF-6
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.TotalFibersCreated++
 	m.ActiveFibers++
 	m.TotalStackMemory += int64(stackSize)
-	m.LastUpdateTime = time.Now()
-
 	if m.ActiveFibers > m.PeakFiberCount {
 		m.PeakFiberCount = m.ActiveFibers
 	}
+	m.LastUpdateTime = now
+	m.mu.Unlock()
 }
 
 // RecordFiberCompleted records that a fiber completed
@@ -72,6 +149,7 @@ func (m *Metrics) RecordFiberCompleted(f *fiber.Fiber) {
 	if m == nil || f == nil {
 		return
 	}
+	now := time.Now() // outside lock — PERF-6
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.completed[f.ID]; exists {
@@ -95,11 +173,18 @@ func (m *Metrics) RecordFiberCompleted(f *fiber.Fiber) {
 	if m.TotalStackMemory >= int64(f.StackSize) {
 		m.TotalStackMemory -= int64(f.StackSize)
 	}
-	m.LastUpdateTime = time.Now()
+	m.LastUpdateTime = now
 
 	// Update average run time
 	if m.TotalFibersCompleted > 0 {
 		m.AverageRunTime = m.TotalCPUTime / time.Duration(m.TotalFibersCompleted)
+	}
+
+	// Record fiber run time in the histogram. LatencyHistogram has its own
+	// internal mutex; calling it while holding m.mu is safe because the
+	// histogram lock is never acquired on a path that subsequently acquires m.mu.
+	if f.CPUTime > 0 && m.FiberRunHistogram != nil {
+		m.FiberRunHistogram.Record(f.CPUTime)
 	}
 }
 
@@ -184,20 +269,29 @@ func (m *Metrics) ComputeBlockedFibersFrom(fibers []*fiber.Fiber) {
 
 // RecordContextSwitch records a context switch
 func (m *Metrics) RecordContextSwitch() {
+	now := time.Now() // outside lock — PERF-6
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.TotalContextSwitches++
-	m.LastUpdateTime = time.Now()
+	m.LastUpdateTime = now
+	m.mu.Unlock()
 }
 
 // RecordScheduleCall records a scheduler call
 func (m *Metrics) RecordScheduleCall() {
+	now := time.Now() // outside lock — PERF-6
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.TotalScheduleCalls++
-	m.LastUpdateTime = time.Now()
+	m.LastUpdateTime = now
+	m.mu.Unlock()
+}
+
+// RecordFiberPanic increments the panic counter. The runtime calls this when
+// a fiber's function panics and is recovered. Kept separate from
+// RecordFiberCompleted to avoid a circular-import dependency on fiber internals.
+func (m *Metrics) RecordFiberPanic() {
+	m.mu.Lock()
+	m.TotalFiberPanics++
+	m.mu.Unlock()
 }
 
 // RecordYield records a fiber yield
@@ -226,19 +320,49 @@ func (m *Metrics) RecordStealAttempt(success bool) {
 	m.LastUpdateTime = time.Now()
 }
 
-// GetSnapshot returns a snapshot of current metrics
+// GetSnapshot returns a snapshot of the current-run metrics. Counters are
+// reset to zero after each Reset() call; use GetLifetimeSnapshot for
+// Prometheus-compatible monotonically-increasing counters (OBS-2).
 func (m *Metrics) GetSnapshot() MetricsSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.snapshotLocked(false)
+}
 
+// GetLifetimeSnapshot returns a snapshot where the five monotonic counters
+// (FibersCreated, FibersCompleted, ContextSwitches, Yields, ScheduleCalls)
+// include values accumulated across all prior Reset() calls. Use this for
+// Prometheus /metrics output to ensure counters never decrease (OBS-2).
+func (m *Metrics) GetLifetimeSnapshot() MetricsSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.snapshotLocked(true)
+}
+
+// snapshotLocked builds a MetricsSnapshot under the read lock already held.
+// When lifetime is true, accumulated reset offsets are added to the counters.
+func (m *Metrics) snapshotLocked(lifetime bool) MetricsSnapshot {
+	created := m.TotalFibersCreated
+	completed := m.TotalFibersCompleted
+	switches := m.TotalContextSwitches
+	schedules := m.TotalScheduleCalls
+	yields := m.TotalYields
+	if lifetime {
+		created += m.resetOffset.fibersCreated
+		completed += m.resetOffset.fibersCompleted
+		switches += m.resetOffset.contextSwitches
+		schedules += m.resetOffset.scheduleCalls
+		yields += m.resetOffset.yields
+	}
 	return MetricsSnapshot{
-		TotalFibersCreated:   m.TotalFibersCreated,
-		TotalFibersCompleted: m.TotalFibersCompleted,
+		TotalFibersCreated:   created,
+		TotalFibersCompleted: completed,
 		ActiveFibers:         m.ActiveFibers,
 		BlockedFibers:        m.BlockedFibers,
-		TotalContextSwitches: m.TotalContextSwitches,
-		TotalScheduleCalls:   m.TotalScheduleCalls,
-		TotalYields:          m.TotalYields,
+		TotalContextSwitches: switches,
+		TotalScheduleCalls:   schedules,
+		TotalYields:          yields,
+		TotalFiberPanics:     m.TotalFiberPanics,
 		AverageRunTime:       m.AverageRunTime,
 		AverageWaitTime:      m.AverageWaitTime,
 		TotalCPUTime:         m.TotalCPUTime,
@@ -253,32 +377,45 @@ func (m *Metrics) GetSnapshot() MetricsSnapshot {
 			}
 			return time.Since(m.StartTime)
 		}(),
-		LastUpdateTime:       m.LastUpdateTime,
+		LastUpdateTime:    m.LastUpdateTime,
+		FiberRunHistogram: m.FiberRunHistogram,
 	}
 }
 
-// Reset resets all metrics
+// Reset resets per-run counters while accumulating their values into
+// resetOffset so that Prometheus counters remain monotonically increasing
+// across restarts (OBS-2).
 func (m *Metrics) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Accumulate current counters into the reset offset so Prometheus sees
+	// monotonically increasing values across resets.
+	m.resetOffset.fibersCreated += m.TotalFibersCreated
+	m.resetOffset.fibersCompleted += m.TotalFibersCompleted
+	m.resetOffset.contextSwitches += m.TotalContextSwitches
+	m.resetOffset.yields += m.TotalYields
+	m.resetOffset.scheduleCalls += m.TotalScheduleCalls
+
+	// Reset the per-run counters.
 	m.TotalFibersCreated = 0
 	m.TotalFibersCompleted = 0
+	m.TotalContextSwitches = 0
+	m.TotalYields = 0
+	m.TotalScheduleCalls = 0
 	m.ActiveFibers = 0
 	m.BlockedFibers = 0
-	m.TotalContextSwitches = 0
-	m.TotalScheduleCalls = 0
-	m.TotalYields = 0
+	m.TotalStackMemory = 0
+	m.PeakFiberCount = 0
+	m.StartTime = time.Time{}
 	m.AverageRunTime = 0
 	m.AverageWaitTime = 0
 	m.TotalCPUTime = 0
 	m.TotalStealAttempts = 0
 	m.TotalStealSuccesses = 0
 	m.StealSuccessRate = 0
-	m.PeakFiberCount = 0
-	m.TotalStackMemory = 0
 	m.completed = make(map[fiber.FiberID]struct{})
-	m.StartTime = time.Time{}
+	m.FiberRunHistogram = NewLatencyHistogram()
 	m.LastUpdateTime = time.Now()
 }
 
@@ -304,16 +441,23 @@ type MetricsSnapshot struct {
 	TotalContextSwitches int64
 	TotalScheduleCalls   int64
 	TotalYields          int64
-	AverageRunTime       time.Duration
-	AverageWaitTime      time.Duration
-	TotalCPUTime         time.Duration
-	TotalStealAttempts   int64
-	TotalStealSuccesses  int64
-	StealSuccessRate     float64
-	PeakFiberCount       int64
-	TotalStackMemory     int64
-	Uptime               time.Duration
-	LastUpdateTime       time.Time
+	// TotalFiberPanics counts fibers whose function panicked and was recovered.
+	TotalFiberPanics int64
+	// AverageRunTime is the mean CPU time per completed fiber.
+	AverageRunTime time.Duration
+	// AverageWaitTime is reserved for future implementation. Always zero.
+	AverageWaitTime time.Duration
+	TotalCPUTime        time.Duration
+	TotalStealAttempts  int64
+	TotalStealSuccesses int64
+	StealSuccessRate    float64
+	PeakFiberCount      int64
+	TotalStackMemory    int64
+	Uptime              time.Duration
+	LastUpdateTime      time.Time
+	// FiberRunHistogram captures the distribution of fiber wall-clock run times.
+	// Nil when no fibers have completed.
+	FiberRunHistogram *LatencyHistogram
 }
 
 // FiberEvent represents an event in a fiber's lifecycle
@@ -370,70 +514,98 @@ func (et EventType) String() string {
 	}
 }
 
-// EventTracker tracks fiber events for profiling and visualization
+// EventTracker tracks fiber lifecycle events using a circular ring buffer.
+// The ring buffer avoids the O(n) slice-shift that the old append-and-trim
+// approach incurred on every overflow (PERF-7).
 type EventTracker struct {
-	events    []FiberEvent
-	maxEvents int
-	mu        sync.RWMutex
+	events   []FiberEvent
+	head     int // index of oldest event
+	tail     int // index where next event is written
+	count    int // number of valid events currently stored
+	capacity int
+	mu       sync.RWMutex
 }
 
-// NewEventTracker creates a new event tracker
-func NewEventTracker(maxEvents int) *EventTracker {
-	if maxEvents <= 0 {
-		maxEvents = 10000 // Default
+// NewEventTracker creates a new event tracker backed by a ring buffer of the
+// given capacity. A capacity <= 0 defaults to 1000.
+func NewEventTracker(capacity int) *EventTracker {
+	if capacity <= 0 {
+		capacity = 1000
 	}
-
 	return &EventTracker{
-		events:    make([]FiberEvent, 0),
-		maxEvents: maxEvents,
+		events:   make([]FiberEvent, capacity),
+		capacity: capacity,
 	}
 }
 
-// RecordEvent records a fiber event
+// RecordEvent appends an event to the ring buffer, overwriting the oldest
+// event when the buffer is full.
 func (et *EventTracker) RecordEvent(event FiberEvent) {
 	et.mu.Lock()
-	defer et.mu.Unlock()
-
-	et.events = append(et.events, event)
-
-	// Keep only last maxEvents
-	if len(et.events) > et.maxEvents {
-		et.events = et.events[len(et.events)-et.maxEvents:]
+	et.events[et.tail] = event
+	et.tail = (et.tail + 1) % et.capacity
+	if et.count < et.capacity {
+		et.count++
+	} else {
+		// Ring is full; advance head to overwrite oldest.
+		et.head = (et.head + 1) % et.capacity
 	}
+	et.mu.Unlock()
 }
 
-// GetEvents returns all recorded events
+// GetEvents returns all events currently stored in the ring buffer, ordered
+// from oldest to most recent.
 func (et *EventTracker) GetEvents() []FiberEvent {
 	et.mu.RLock()
 	defer et.mu.RUnlock()
 
-	events := make([]FiberEvent, len(et.events))
-	copy(events, et.events)
-	return events
+	if et.count == 0 {
+		return []FiberEvent{}
+	}
+	result := make([]FiberEvent, et.count)
+	for i := 0; i < et.count; i++ {
+		result[i] = et.events[(et.head+i)%et.capacity]
+	}
+	return result
 }
 
-// GetRecentEvents returns the N most recent events
+// GetRecentEvents returns the n most recent events, ordered oldest-first.
+// Returns []FiberEvent{} (never nil) when n <= 0 or the tracker is empty.
 func (et *EventTracker) GetRecentEvents(n int) []FiberEvent {
 	et.mu.RLock()
 	defer et.mu.RUnlock()
 
-	if n <= 0 {
+	if n <= 0 || et.count == 0 {
 		return []FiberEvent{}
 	}
-	if n > len(et.events) {
-		n = len(et.events)
+	if n > et.count {
+		n = et.count
 	}
-
-	start := len(et.events) - n
-	events := make([]FiberEvent, n)
-	copy(events, et.events[start:])
-	return events
+	result := make([]FiberEvent, n)
+	// Read the n most recent events (from tail going backwards).
+	for i := 0; i < n; i++ {
+		idx := ((et.tail - 1 - i) % et.capacity + et.capacity) % et.capacity
+		result[n-1-i] = et.events[idx]
+	}
+	return result
 }
 
-// Clear clears all events
+// GetCount returns the number of events currently stored in the ring buffer.
+func (et *EventTracker) GetCount() int {
+	et.mu.RLock()
+	defer et.mu.RUnlock()
+	return et.count
+}
+
+// Clear removes all events from the ring buffer and releases GC references.
 func (et *EventTracker) Clear() {
 	et.mu.Lock()
-	defer et.mu.Unlock()
-
-	et.events = make([]FiberEvent, 0)
+	et.head = 0
+	et.tail = 0
+	et.count = 0
+	// Clear event data to release GC references.
+	for i := range et.events {
+		et.events[i] = FiberEvent{}
+	}
+	et.mu.Unlock()
 }

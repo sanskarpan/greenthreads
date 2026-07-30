@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 // TestStopBoundsByContext_StuckFiber is a regression test for the
@@ -166,65 +166,77 @@ func TestMainFiberDoesNotMaskDeadlock(t *testing.T) {
 	t.Fatal("deadlock detector never reported a deadlock while the main fiber was runnable (the original bug)")
 }
 
-// TestConcurrentStartStop is a regression test for the critical bug
+// TestConcurrentStartStopAllSchedulers is a regression test for the critical bug
 // where concurrent Start and Stop allowed the old execution loop to
 // read the new run's context or result channel. The fix uses a
 // per-run lifecycle mutex that Start must acquire before mutating
 // shared state, ensuring the old loop has finished before the new
-// one is published.
-func TestConcurrentStartStop(t *testing.T) {
+// one is published. The test is parameterised over all scheduler types.
+func TestConcurrentStartStopAllSchedulers(t *testing.T) {
 	t.Parallel()
-	rt := NewRuntime(scheduler.TypeFIFO, 1)
+	schedulerTypes := []scheduler.SchedulerType{
+		scheduler.TypeFIFO,
+		scheduler.TypeRoundRobin,
+		scheduler.TypePriority,
+		scheduler.TypeWorkStealing,
+	}
+	for _, st := range schedulerTypes {
+		st := st
+		t.Run(st.String(), func(t *testing.T) {
+			t.Parallel()
+			rt := NewRuntime(st, 4)
 
-	const cycles = 50
-	for i := 0; i < cycles; i++ {
-		// Start
-		if err := rt.Start(); err != nil {
-			t.Fatalf("cycle %d: start failed: %v", i, err)
-		}
-		// Stop concurrently with a spawner
-		var spawns atomic.Int64
-		var wg sync.WaitGroup
-		wg.Add(2)
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		go func() {
-			defer wg.Done()
-			_ = rt.Stop(stopCtx)
-		}()
-		go func() {
-			defer wg.Done()
-			// Try a spawn; it may legitimately fail because we are in
-			// the middle of a Stop. What matters is no panic and no
-			// state corruption.
-			_, _ = rt.Spawn(func() {}, "x")
-			spawns.Add(1)
-		}()
-		wg.Wait()
-		stopCancel()
+			const cycles = 50
+			for i := 0; i < cycles; i++ {
+				// Start
+				if err := rt.Start(); err != nil {
+					t.Fatalf("cycle %d: start failed: %v", i, err)
+				}
+				// Stop concurrently with a spawner
+				var spawns atomic.Int64
+				var wg sync.WaitGroup
+				wg.Add(2)
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				go func() {
+					defer wg.Done()
+					_ = rt.Stop(stopCtx)
+				}()
+				go func() {
+					defer wg.Done()
+					// Try a spawn; it may legitimately fail because we are in
+					// the middle of a Stop. What matters is no panic and no
+					// state corruption.
+					_, _ = rt.Spawn(func() {}, "x")
+					spawns.Add(1)
+				}()
+				wg.Wait()
+				stopCancel()
 
-		// Verify state is consistent: no scheduler completion beyond
-		// what was actually executed, and the runtime reports stopped.
-		if rt.IsRunning() {
-			t.Fatalf("cycle %d: runtime still running after Stop", i)
-		}
-	}
+				// Verify state is consistent: no scheduler completion beyond
+				// what was actually executed, and the runtime reports stopped.
+				if rt.IsRunning() {
+					t.Fatalf("cycle %d: runtime still running after Stop", i)
+				}
+			}
 
-	// Final restart and quick smoke test.
-	if err := rt.Start(); err != nil {
-		t.Fatal(err)
+			// Final restart and quick smoke test.
+			if err := rt.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			if _, err := rt.Spawn(func() { close(done) }, "final"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("final smoke fiber did not complete")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = rt.Stop(ctx)
+		})
 	}
-	done := make(chan struct{})
-	if _, err := rt.Spawn(func() { close(done) }, "final"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("final smoke fiber did not complete")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_ = rt.Stop(ctx)
 }
 
 // TestSpawnAfterStopFails is a regression test for the bug where

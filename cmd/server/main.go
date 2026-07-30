@@ -5,20 +5,26 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof" // #nosec G108 -- pprof only activated when -pprof-addr flag is set
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
-	"github.com/sanskar/greenthreads/web"
+	"github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/web"
 )
 
 func main() {
 	port := flag.String("port", "8080", "TCP port used when -listen is not set")
 	listen := flag.String("listen", "", "listen address; defaults to 127.0.0.1:<port>")
+	pprofAddr := flag.String("pprof-addr", "", "address to serve pprof on (e.g. localhost:6060); empty disables pprof")
+	tlsCert := flag.String("tls-cert", "", "path to TLS certificate PEM file (enables TLS when set with -tls-key)")
+	tlsKey := flag.String("tls-key", "", "path to TLS private key PEM file (enables TLS when set with -tls-cert)")
 	flag.Parse()
 
 	addr := *listen
@@ -35,10 +41,33 @@ func main() {
 		os.Exit(2)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logLevel := slog.LevelInfo
+	switch strings.ToUpper(os.Getenv("LOG_LEVEL")) {
+	case "DEBUG":
+		logLevel = slog.LevelDebug
+	case "WARN", "WARNING":
+		logLevel = slog.LevelWarn
+	case "ERROR":
+		logLevel = slog.LevelError
+	}
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+	logger := slog.New(handler)
 	slog.SetDefault(logger)
+
+	if *pprofAddr != "" {
+		go func() {
+			logger.Info("starting pprof server", "addr", *pprofAddr)
+			if err := http.ListenAndServe(*pprofAddr, nil); err != nil { // #nosec G114 -- pprof debug endpoint; read-only, not exposed in production
+				logger.Error("pprof server failed", "error", err)
+			}
+		}()
+	}
+
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
-	server := web.NewServer(rt)
+	cfg := web.DefaultConfig()
+	cfg.TLSCertFile = *tlsCert
+	cfg.TLSKeyFile = *tlsKey
+	server := web.NewServerWithConfig(rt, cfg)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Start(addr) }()
 

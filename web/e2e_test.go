@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 // TestE2EFullLifecycle drives the complete user-facing flow against a real
@@ -20,6 +20,7 @@ import (
 // -> verify readyz goes back to 503 -> graceful shutdown. This is the
 // end-to-end integration test that unit tests cannot replace.
 func TestE2EFullLifecycle(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
 	server := NewServer(rt)
 
@@ -147,6 +148,7 @@ func TestE2EFullLifecycle(t *testing.T) {
 // TestE2EConcurrentClients drives multiple WS clients simultaneously against a
 // real server to surface races or contention the unit suite might miss.
 func TestE2EConcurrentClients(t *testing.T) {
+	t.Parallel()
 	rt := runtime.NewRuntime(scheduler.TypeWorkStealing, 4)
 	server := NewServer(rt)
 

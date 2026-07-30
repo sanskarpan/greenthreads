@@ -14,17 +14,19 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"runtime/debug"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
-	"github.com/sanskar/greenthreads/internal/metrics"
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/metrics"
+	goruntime "github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 // Static assets are embedded so serving does not depend on the process working
@@ -58,6 +60,9 @@ type ServerConfig struct {
 	// plane while waiting for in-flight fibers to drain. A fiber that never
 	// returns must not freeze the WebSocket handler that triggered it.
 	StopTimeout time.Duration
+	// BroadcastInterval controls how often the server pushes state updates to
+	// all connected WebSocket clients. Defaults to 100ms when zero.
+	BroadcastInterval time.Duration
 	// AllowTokenInQuery permits the auth token via ?token= in the URL. Browser
 	// WebSocket clients cannot set Authorization headers, so this is the only
 	// way for a same-origin browser UI to authenticate. The token then leaks
@@ -66,19 +71,82 @@ type ServerConfig struct {
 	// visualization keeps working out of the box. Disable it for deployments
 	// that authenticate non-browser clients only.
 	AllowTokenInQuery bool
+	// TokenRevalidationInterval sets how often live WebSocket connections
+	// re-check the auth token. 0 disables periodic revalidation (default).
+	// When non-zero, connections whose token no longer matches the current
+	// server token are closed.
+	TokenRevalidationInterval time.Duration
+	// ReadOnlyToken is a separate token that grants read-only access. Clients
+	// authenticating with ReadOnlyToken can receive state updates and query
+	// metrics but cannot spawn fibers, stop, reset, or init the runtime.
+	ReadOnlyToken string
+	// TLSCertFile and TLSKeyFile, when both non-empty, cause the server to
+	// listen with TLS. The certificate must be PEM-encoded. Leave both empty
+	// for plain HTTP (default; requires a TLS-terminating proxy in production).
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
-func defaultConfig() ServerConfig {
+// envInt reads an integer from the named environment variable.
+// It returns fallback when the variable is unset, empty, not parseable as an
+// integer, or non-positive.
+func envInt(key string, fallback int) int {
+	if s := os.Getenv(key); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			return v
+		}
+	}
+	return fallback
+}
+
+// envInt64 reads an int64 from the named environment variable.
+// It returns fallback when the variable is unset, empty, not parseable, or
+// non-positive.
+func envInt64(key string, fallback int64) int64 {
+	if s := os.Getenv(key); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
+			return v
+		}
+	}
+	return fallback
+}
+
+// envDuration reads a time.Duration from the named environment variable using
+// time.ParseDuration syntax (e.g. "5s", "100ms"). It returns fallback when the
+// variable is unset, empty, not parseable, or non-positive.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if s := os.Getenv(key); s != "" {
+		if v, err := time.ParseDuration(s); err == nil && v > 0 {
+			return v
+		}
+	}
+	return fallback
+}
+
+// Environment variable overrides (all optional):
+//
+//	GREENTHREADS_MAX_CLIENTS         int          max concurrent WebSocket clients (default 64)
+//	GREENTHREADS_MAX_FIBERS          int64        max concurrent fibers per runtime (default 10000)
+//	GREENTHREADS_STOP_TIMEOUT        duration     runtime stop deadline (default 5s)
+//	GREENTHREADS_MSG_PER_SEC         int          WebSocket rate limit per client (default 30)
+//	GREENTHREADS_PING_INTERVAL       duration     WebSocket keepalive ping interval (default 30s)
+//	GREENTHREADS_BROADCAST_INTERVAL  duration     state broadcast interval (default 100ms)
+//	GREENTHREADS_TLS_CERT            path to PEM certificate file; enables TLS when both cert and key are set
+//	GREENTHREADS_TLS_KEY             path to PEM private key file
+func DefaultConfig() ServerConfig {
 	return ServerConfig{
 		AuthToken:           os.Getenv("GREENTHREADS_AUTH_TOKEN"),
-		MaxClients:          defaultMaxClients,
+		MaxClients:          envInt("GREENTHREADS_MAX_CLIENTS", defaultMaxClients),
 		MaxMessageBytes:     defaultMaxMessageBytes,
-		MessagesPerSecond:   defaultMessagesPerSecond,
-		MaxFibersPerRuntime: defaultMaxFibersPerRuntime,
-		PingInterval:        defaultPingInterval,
+		MessagesPerSecond:   envInt("GREENTHREADS_MSG_PER_SEC", defaultMessagesPerSecond),
+		MaxFibersPerRuntime: envInt64("GREENTHREADS_MAX_FIBERS", defaultMaxFibersPerRuntime),
+		PingInterval:        envDuration("GREENTHREADS_PING_INTERVAL", defaultPingInterval),
+		BroadcastInterval:   envDuration("GREENTHREADS_BROADCAST_INTERVAL", 100*time.Millisecond),
 		ReadIdleTimeout:     defaultReadIdleTimeout,
-		StopTimeout:         5 * time.Second,
-		AllowTokenInQuery:   true,
+		StopTimeout:         envDuration("GREENTHREADS_STOP_TIMEOUT", 5*time.Second),
+		AllowTokenInQuery:   false,
+		TLSCertFile:         os.Getenv("GREENTHREADS_TLS_CERT"),
+		TLSKeyFile:          os.Getenv("GREENTHREADS_TLS_KEY"),
 	}
 }
 
@@ -116,13 +184,17 @@ func (cl *client) shutdown() {
 
 // Server exposes the local visualization and its bounded control protocol.
 type Server struct {
-	runtime   *runtime.Runtime
+	runtime   *goruntime.Runtime
 	runtimeMu sync.RWMutex
 	clients   map[*websocket.Conn]*client
 	clientsMu sync.RWMutex
 	// clientCount is an atomic admission counter so a slot can be reserved
 	// without holding clientsMu during the (potentially slow) WS handshake.
 	clientCount int64
+
+	// OBS-5: operational counters exposed via /metrics.
+	spawnErrors      atomic.Int64
+	broadcastDropped atomic.Int64
 
 	config ServerConfig
 	logger *slog.Logger
@@ -137,13 +209,13 @@ type Server struct {
 // NewServer creates a server. By default it allows same-origin browser access
 // and is intended to be bound to loopback; deployments on other interfaces
 // must set GREENTHREADS_AUTH_TOKEN and a deliberate origin policy.
-func NewServer(rt *runtime.Runtime) *Server {
-	return NewServerWithConfig(rt, defaultConfig())
+func NewServer(rt *goruntime.Runtime) *Server {
+	return NewServerWithConfig(rt, DefaultConfig())
 }
 
 // NewServerWithConfig creates a server with explicit security and resource
 // limits.
-func NewServerWithConfig(rt *runtime.Runtime, config ServerConfig) *Server {
+func NewServerWithConfig(rt *goruntime.Runtime, config ServerConfig) *Server {
 	if config.MaxClients <= 0 {
 		config.MaxClients = defaultMaxClients
 	}
@@ -217,6 +289,16 @@ func (s *Server) Start(addr string) error {
 	if !IsLoopbackAddress(addr) && s.config.AuthToken == "" {
 		return fmt.Errorf("GREENTHREADS_AUTH_TOKEN is required for non-loopback listeners")
 	}
+	// SEC-8: Warn if auth token is shorter than 32 characters (don't fail to avoid
+	// breaking existing deployments).
+	if s.config.AuthToken != "" && len(s.config.AuthToken) < 32 {
+		s.logger.Warn("auth token is shorter than 32 characters; consider using a longer token for better security",
+			"token_length", len(s.config.AuthToken))
+	}
+	// SEC-6: Warn if AllowTokenInQuery is enabled so operators are aware of the risk.
+	if s.config.AllowTokenInQuery {
+		s.logger.Warn("AllowTokenInQuery is enabled: auth token will appear in URLs and may be logged")
+	}
 	s.serverMu.Lock()
 	if s.httpServer != nil {
 		s.serverMu.Unlock()
@@ -236,12 +318,20 @@ func (s *Server) Start(addr string) error {
 	s.serverMu.Unlock()
 	go s.broadcastLoop(s.ctx)
 
-	s.logger.Info("server starting", "addr", addr)
-	err := httpServer.ListenAndServe()
-	if err == http.ErrServerClosed {
-		return nil
+	var listenErr error
+	if s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		s.logger.Info("starting TLS server", "addr", addr,
+			"cert", s.config.TLSCertFile)
+		listenErr = httpServer.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile)
+	} else {
+		s.logger.Warn("starting plaintext HTTP server; use TLS in production",
+			"addr", addr)
+		listenErr = httpServer.ListenAndServe()
 	}
-	return err
+	if listenErr != nil && listenErr != http.ErrServerClosed {
+		return listenErr
+	}
+	return nil
 }
 
 // IsLoopbackAddress reports whether addr (host:port) binds to a loopback
@@ -276,22 +366,29 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
-	s.closeClients()
-	s.runtimeMu.Lock()
-	rt := s.runtime
-	s.runtimeMu.Unlock()
+	// OBS-9: Correct shutdown order:
+	//   1. httpServer.Shutdown — stop accepting new requests, drain in-flight HTTP
+	//      (metrics scrapes, health probes) before touching the runtime.
+	//   2. rt.Stop — stop the fiber runtime after HTTP is drained.
+	//   3. closeClients — hard-close WebSocket connections last.
 	var firstErr error
-	if rt != nil {
-		if err := rt.Stop(ctx); err != nil {
-			firstErr = err
-			s.logFor(httptestReq()).Warn("runtime stop reported error during shutdown", "error", err)
-		}
-	}
 	if httpServer != nil {
 		if err := httpServer.Shutdown(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	s.runtimeMu.Lock()
+	rt := s.runtime
+	s.runtimeMu.Unlock()
+	if rt != nil {
+		if err := rt.Stop(ctx); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			s.logFor(httptestReq()).Warn("runtime stop reported error during shutdown", "error", err)
+		}
+	}
+	s.closeClients()
 	s.broadcastWG.Wait()
 	return firstErr
 }
@@ -386,7 +483,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	running := int64(0)
 	var m metrics.MetricsSnapshot
 	if rt != nil {
-		m = rt.GetMetrics()
+		// Use lifetime snapshot for Prometheus so counters are monotonically
+		// increasing across Stop/Reset/Start cycles (OBS-2).
+		m = rt.GetLifetimeMetrics()
 		if rt.IsRunning() {
 			running = 1
 		}
@@ -404,11 +503,82 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeMetric("greenthreads_peak_fiber_count", "Peak active fiber count observed.", "gauge", m.PeakFiberCount)
 	writeMetric("greenthreads_total_stack_memory_bytes", "Simulated stack memory currently retained, in bytes.", "gauge", m.TotalStackMemory)
 	writeMetric("greenthreads_uptime_seconds", "Runtime uptime in seconds.", "gauge", int64(m.Uptime.Seconds()))
+
+	// OBS-4/OBS-5: Go runtime metrics and panic/deadlock counters.
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	fmt.Fprintf(&b, "# HELP go_goroutines Number of goroutines currently running\n")
+	fmt.Fprintf(&b, "# TYPE go_goroutines gauge\n")
+	fmt.Fprintf(&b, "go_goroutines %d\n", runtime.NumGoroutine())
+	fmt.Fprintf(&b, "# HELP go_memstats_alloc_bytes Bytes of allocated heap objects\n")
+	fmt.Fprintf(&b, "# TYPE go_memstats_alloc_bytes gauge\n")
+	fmt.Fprintf(&b, "go_memstats_alloc_bytes %d\n", memStats.Alloc)
+	fmt.Fprintf(&b, "# HELP go_memstats_sys_bytes Total bytes of memory obtained from OS\n")
+	fmt.Fprintf(&b, "# TYPE go_memstats_sys_bytes gauge\n")
+	fmt.Fprintf(&b, "go_memstats_sys_bytes %d\n", memStats.Sys)
+	fmt.Fprintf(&b, "# HELP go_gc_duration_seconds A summary of GC invocation durations\n")
+	fmt.Fprintf(&b, "# TYPE go_gc_duration_seconds gauge\n")
+	fmt.Fprintf(&b, "go_gc_duration_seconds %f\n", float64(memStats.PauseTotalNs)/1e9)
+	// TODO OBS-5: greenthreads_fiber_panics_total — MetricsSnapshot.TotalFiberPanics
+	// does not exist yet; add it to metrics.MetricsSnapshot and wire it here.
+
+	// OBS-5: Web-layer operational counters.
+	writeMetric("greenthreads_spawn_errors_total", "Fiber spawn attempts that returned an error.", "counter", s.spawnErrors.Load())
+	writeMetric("greenthreads_broadcast_messages_dropped_total", "WebSocket broadcast messages dropped because client send buffer was full.", "counter", s.broadcastDropped.Load())
+
+	// OBS-3: Fiber run-time histogram in Prometheus exposition format.
+	if m.FiberRunHistogram != nil {
+		buckets, sum, count := m.FiberRunHistogram.Snapshot()
+		fmt.Fprintf(&b, "# HELP greenthreads_fiber_run_seconds Fiber execution wall-clock time distribution.\n")
+		fmt.Fprintf(&b, "# TYPE greenthreads_fiber_run_seconds histogram\n")
+		for _, bkt := range buckets {
+			var le string
+			if bkt.Le == time.Duration(1<<63-1) {
+				le = "+Inf"
+			} else {
+				le = fmt.Sprintf("%g", bkt.Le.Seconds())
+			}
+			fmt.Fprintf(&b, "greenthreads_fiber_run_seconds_bucket{le=%q} %d\n", le, bkt.Count)
+		}
+		fmt.Fprintf(&b, "greenthreads_fiber_run_seconds_sum %g\n", sum.Seconds())
+		fmt.Fprintf(&b, "greenthreads_fiber_run_seconds_count %d\n", count)
+	}
+
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// upgrader defers all origin checking to the allowedOrigin() method called
+// before Upgrade is invoked. Gorilla's default same-origin check would
+// silently block valid cross-host AllowedOrigins entries (SEC-4).
 var upgrader = websocket.Upgrader{
+	ReadBufferSize:    4096,
+	WriteBufferSize:   4096,
 	EnableCompression: false,
+	CheckOrigin:       func(r *http.Request) bool { return true },
+}
+
+// tokenFromRequest extracts the raw bearer token from a request, checking the
+// Authorization header first and (if AllowTokenInQuery is set) the ?token=
+// query parameter second.
+func (s *Server) tokenFromRequest(r *http.Request) string {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" && s.config.AllowTokenInQuery {
+		token = r.URL.Query().Get("token")
+	}
+	return token
+}
+
+// tokenMatches reports whether the presented token matches the current server
+// auth token using constant-time comparison. Returns true when no auth token
+// is configured.
+func (s *Server) tokenMatches(presented string) bool {
+	if s.config.AuthToken == "" {
+		return true
+	}
+	if len(presented) != len(s.config.AuthToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(s.config.AuthToken)) == 1
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +590,17 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
 		return
 	}
+
+	// SEC-1: Capture the token presented at handshake time for later
+	// revalidation when TokenRevalidationInterval is set.
+	presentedToken := s.tokenFromRequest(r)
+
+	// SEC-2: Determine whether this client is read-only. A client is
+	// read-only when it authenticated with ReadOnlyToken (and ReadOnlyToken
+	// differs from the main AuthToken so ordinary admins are not demoted).
+	readOnly := s.config.ReadOnlyToken != "" &&
+		subtle.ConstantTimeCompare([]byte(presentedToken), []byte(s.config.ReadOnlyToken)) == 1
+
 	// Reserve an admission slot atomically without holding clientsMu, so a
 	// slow/hanging WebSocket handshake cannot block other connection admissions.
 	if !s.reserveClient() {
@@ -439,6 +620,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer s.unregister(cl, conn)
 	defer func() { _ = conn.Close() }()
 
+	if readOnly {
+		s.logger.Info("read-only WebSocket client connected", "remote_addr", conn.RemoteAddr())
+	}
+
 	s.serverMu.Lock()
 	ctx := s.ctx
 	s.serverMu.Unlock()
@@ -452,9 +637,36 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	s.sendInitialState(conn)
 
+	// SEC-1: Set up periodic token revalidation ticker if configured.
+	var revalC <-chan time.Time
+	if s.config.TokenRevalidationInterval > 0 {
+		revalTicker := time.NewTicker(s.config.TokenRevalidationInterval)
+		defer revalTicker.Stop()
+		revalC = revalTicker.C
+	}
+
 	for {
+		// SEC-1: Non-blocking check of the revalidation ticker.
+		select {
+		case <-revalC:
+			if s.config.AuthToken != "" && !s.tokenMatches(presentedToken) {
+				s.logger.Info("closing connection: auth token rotated", "remote_addr", conn.RemoteAddr())
+				_ = conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseGoingAway, "token rotated"))
+				return
+			}
+		default:
+		}
+
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			// OBS-7: Log WebSocket disconnects so operators can distinguish
+			// clean closes from unexpected connection errors.
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				s.logFor(r).Info("WebSocket client disconnected", "remote_addr", conn.RemoteAddr())
+			} else {
+				s.logFor(r).Warn("WebSocket client connection error", "remote_addr", conn.RemoteAddr(), "error", err)
+			}
 			return
 		}
 		if !s.allowMessage(conn) {
@@ -466,7 +678,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.sendError(conn, "invalid JSON message")
 			continue
 		}
-		s.handleMessage(conn, msg)
+		s.handleMessage(conn, msg, readOnly)
 	}
 }
 
@@ -476,13 +688,22 @@ type Message struct {
 	Payload map[string]interface{} `json:"payload"`
 }
 
-func (s *Server) handleMessage(conn *websocket.Conn, msg Message) {
+func (s *Server) handleMessage(conn *websocket.Conn, msg Message, readOnly bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("panic in handleMessage", "panic", r, "stack", string(debug.Stack()))
 			s.sendError(conn, "invalid request")
 		}
 	}()
+	// SEC-2: Reject destructive commands from read-only clients.
+	destructive := map[string]bool{
+		"init": true, "stop": true, "reset": true, "spawn": true,
+		"setConfig": true, "kill": true, "pause": true, "resume": true,
+	}
+	if readOnly && destructive[msg.Type] {
+		s.sendError(conn, "read-only client cannot execute: "+msg.Type)
+		return
+	}
 	switch msg.Type {
 	case "init":
 		s.handleInit(conn, msg)
@@ -515,7 +736,7 @@ func (s *Server) handleInit(conn *websocket.Conn, msg Message) {
 		s.sendError(conn, "unsupported scheduler type")
 		return
 	}
-	newRuntime := runtime.NewRuntime(sType, numWorkers)
+	newRuntime := goruntime.NewRuntime(sType, numWorkers)
 	if err := newRuntime.Start(); err != nil {
 		s.sendError(conn, "failed to start runtime")
 		return
@@ -555,6 +776,9 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 	// Cap on concurrently-active fibers (created minus completed), not the
 	// cumulative lifetime count: a long-lived runtime should be able to spawn
 	// indefinitely as old fibers finish.
+	// TODO SEC-5: This check is not atomic with rt.Spawn. The active count can
+	// exceed MaxFibersPerRuntime by at most MaxClients concurrent spawners.
+	// Fix: enforce the cap atomically inside rt.Spawn with a counter CAS.
 	if rt.GetMetrics().ActiveFibers >= s.config.MaxFibersPerRuntime {
 		s.sendError(conn, "fiber limit reached")
 		return
@@ -566,6 +790,23 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 	} else if len(name) > 128 {
 		s.sendError(conn, "name must be 1-128 characters")
 		return
+	} else {
+		// SEC-3: Reject names containing control characters (except tab), null
+		// bytes, ANSI escape sequences, or invalid Unicode code points.
+		if !utf8.ValidString(name) {
+			s.sendError(conn, "fiber name must be valid UTF-8")
+			return
+		}
+		for _, r := range name {
+			if (r < 0x20 && r != '\t') || r == 0x7f || r > 0xfffd {
+				s.sendError(conn, "fiber name contains invalid characters")
+				return
+			}
+		}
+		if strings.ContainsRune(name, '\x1b') {
+			s.sendError(conn, "fiber name contains invalid characters")
+			return
+		}
 	}
 	priority, err := payloadInt(msg.Payload, "priority", -100, 100)
 	if err != nil {
@@ -579,6 +820,7 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 	}
 	fiberID, err := rt.Spawn(func() { time.Sleep(time.Duration(duration) * time.Millisecond) }, name)
 	if err != nil {
+		s.spawnErrors.Add(1)
 		s.sendError(conn, "failed to spawn fiber")
 		return
 	}
@@ -635,7 +877,9 @@ func (s *Server) handleReset(conn *websocket.Conn, _ Message) {
 			s.sendError(conn, "failed to stop runtime")
 			return
 		}
-		rt.Reset()
+		if err := rt.Reset(); err != nil {
+			s.logger.Error("runtime reset failed", "error", err)
+		}
 	}
 	s.sendSuccess(conn, nil)
 }
@@ -668,7 +912,7 @@ func (s *Server) handleGetState(conn *websocket.Conn) {
 	}
 	s.sendJSON(conn, map[string]interface{}{
 		"type": "stateUpdate",
-		"payload": convertRuntimeUpdate(&runtime.RuntimeUpdate{
+		"payload": convertRuntimeUpdate(&goruntime.RuntimeUpdate{
 			Fibers: rt.GetAllFibers(), Metrics: rt.GetMetrics(), Events: rt.GetEvents(100),
 			SchedulerType: rt.GetScheduler().Type().String(), Timestamp: time.Now(),
 		}),
@@ -684,7 +928,7 @@ func (s *Server) sendInitialState(conn *websocket.Conn) {
 	}
 	s.sendJSON(conn, map[string]interface{}{
 		"type": "stateUpdate",
-		"payload": convertRuntimeUpdate(&runtime.RuntimeUpdate{
+		"payload": convertRuntimeUpdate(&goruntime.RuntimeUpdate{
 			Fibers: rt.GetAllFibers(), Metrics: rt.GetMetrics(), Events: rt.GetEvents(100),
 			SchedulerType: rt.GetScheduler().Type().String(), Timestamp: time.Now(),
 		}),
@@ -745,6 +989,7 @@ func (s *Server) enqueue(cl *client, value interface{}) {
 	select {
 	case cl.sendCh <- value:
 	default:
+		s.broadcastDropped.Add(1)
 		s.logger.Warn("websocket send queue full; dropping message")
 	}
 }
@@ -758,8 +1003,19 @@ func (s *Server) sendJSON(conn *websocket.Conn, value interface{}) {
 
 func (s *Server) broadcastLoop(ctx context.Context) {
 	defer s.broadcastWG.Done()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	interval := s.config.BroadcastInterval
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// PERF-5: Cache last metrics snapshot to skip GetAllFibers() (the
+	// expensive N-fiber clone) when no fiber state has changed since the
+	// last broadcast.
+	var lastSnap metrics.MetricsSnapshot
+	var lastMsg interface{}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -771,11 +1027,31 @@ func (s *Server) broadcastLoop(ctx context.Context) {
 			if rt == nil {
 				continue
 			}
-			update := convertRuntimeUpdate(&runtime.RuntimeUpdate{
-				Fibers: rt.GetAllFibers(), Metrics: rt.GetMetrics(), Events: rt.GetEvents(100),
+			snap := rt.GetMetrics()
+			// Skip the expensive GetAllFibers call when the key counters have
+			// not moved since the last tick. Resend the cached message instead.
+			if lastMsg != nil &&
+				snap.TotalFibersCreated == lastSnap.TotalFibersCreated &&
+				snap.TotalFibersCompleted == lastSnap.TotalFibersCompleted &&
+				snap.ActiveFibers == lastSnap.ActiveFibers &&
+				snap.BlockedFibers == lastSnap.BlockedFibers {
+				s.clientsMu.RLock()
+				clients := make([]*client, 0, len(s.clients))
+				for _, cl := range s.clients {
+					clients = append(clients, cl)
+				}
+				s.clientsMu.RUnlock()
+				for _, cl := range clients {
+					s.enqueue(cl, lastMsg)
+				}
+				continue
+			}
+			lastSnap = snap
+			update := convertRuntimeUpdate(&goruntime.RuntimeUpdate{
+				Fibers: rt.GetAllFibers(), Metrics: snap, Events: rt.GetEvents(100),
 				SchedulerType: rt.GetScheduler().Type().String(), Timestamp: time.Now(),
 			})
-			msg := map[string]interface{}{"type": "update", "payload": update}
+			lastMsg = map[string]interface{}{"type": "update", "payload": update}
 			s.clientsMu.RLock()
 			clients := make([]*client, 0, len(s.clients))
 			for _, cl := range s.clients {
@@ -783,7 +1059,7 @@ func (s *Server) broadcastLoop(ctx context.Context) {
 			}
 			s.clientsMu.RUnlock()
 			for _, cl := range clients {
-				s.enqueue(cl, msg)
+				s.enqueue(cl, lastMsg)
 			}
 		}
 	}
@@ -879,6 +1155,13 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) allowedOrigin(r *http.Request) bool {
+	// SEC-7: Validate Host header to prevent injection from bypassing origin
+	// checks. Reject hosts containing CRLF or null bytes that could be used
+	// to smuggle headers.
+	if strings.ContainsAny(r.Host, "\r\n\x00") {
+		return false
+	}
+
 	origin := r.Header.Get("Origin")
 	// An empty Origin is a non-browser client; browsers always send Origin
 	// on WebSocket dials. The default config allows this so programmatic
@@ -982,7 +1265,7 @@ type EventJSON struct {
 
 // convertRuntimeUpdate converts runtime snapshots without leaking internal
 // types or pointers into the WebSocket protocol.
-func convertRuntimeUpdate(update *runtime.RuntimeUpdate) RuntimeUpdateJSON {
+func convertRuntimeUpdate(update *goruntime.RuntimeUpdate) RuntimeUpdateJSON {
 	if update == nil {
 		return RuntimeUpdateJSON{}
 	}

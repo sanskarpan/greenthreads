@@ -96,6 +96,9 @@ var nextFiberID uint64
 // NewFiber allocates a ready fiber and its bounded simulated stack.
 func NewFiber(fn FiberFunc, stackSize int, name string) *Fiber {
 	id := FiberID(atomic.AddUint64(&nextFiberID, 1))
+	// Each fiber allocates stackSize bytes of simulated stack. At DefaultStackSize (64KB)
+	// and 10,000 concurrent fibers, total stack memory is ~640MB. Scale numWorkers
+	// and DefaultStackSize accordingly.
 	return &Fiber{
 		ID:        id,
 		Name:      name,
@@ -132,7 +135,13 @@ func (f *Fiber) Run() {
 	defer func() {
 		f.mu.Lock()
 		if recovered := recover(); recovered != nil {
-			f.failure = fmt.Errorf("fiber %d (%s) panicked: %v", f.ID, f.Name, recovered)
+			var panicErr error
+			if e, ok := recovered.(error); ok {
+				panicErr = fmt.Errorf("fiber %d (%s) panicked: %w", f.ID, f.Name, e)
+			} else {
+				panicErr = fmt.Errorf("fiber %d (%s) panicked with value: %v", f.ID, f.Name, recovered)
+			}
+			f.failure = panicErr
 			f.panicStack = debug.Stack()
 		}
 		f.State = StateFinished

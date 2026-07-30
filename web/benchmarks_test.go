@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func BenchmarkWebSocketInit(b *testing.B) {

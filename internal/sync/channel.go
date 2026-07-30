@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 // ErrChannelClosed indicates that a channel cannot accept or produce another
@@ -66,6 +66,7 @@ func (fc *FiberChannel) Send(value interface{}, currentFiber *fiber.Fiber) error
 	}
 	if len(fc.receivers) > 0 {
 		receiver := fc.receivers[0]
+		fc.receivers[0] = nil // clear GC reference before slicing
 		fc.receivers = fc.receivers[1:]
 		receiver.value = value
 		receiver.err = nil
@@ -105,6 +106,7 @@ func (fc *FiberChannel) SendCtx(ctx context.Context, value interface{}, currentF
 	}
 	if len(fc.receivers) > 0 {
 		receiver := fc.receivers[0]
+		fc.receivers[0] = nil // clear GC reference before slicing
 		fc.receivers = fc.receivers[1:]
 		receiver.value = value
 		receiver.err = nil
@@ -153,7 +155,9 @@ func (fc *FiberChannel) SendCtx(ctx context.Context, value interface{}, currentF
 func (fc *FiberChannel) removeSenderLocked(waiter *channelSender) {
 	for i, s := range fc.senders {
 		if s == waiter {
-			fc.senders = append(fc.senders[:i], fc.senders[i+1:]...)
+			copy(fc.senders[i:], fc.senders[i+1:])
+			fc.senders[len(fc.senders)-1] = nil // clear now-unreachable tail slot
+			fc.senders = fc.senders[:len(fc.senders)-1]
 			return
 		}
 	}
@@ -175,6 +179,7 @@ func (fc *FiberChannel) Receive(currentFiber *fiber.Fiber) (interface{}, error) 
 	}
 	if len(fc.senders) > 0 {
 		sender := fc.senders[0]
+		fc.senders[0] = nil // clear GC reference before slicing
 		fc.senders = fc.senders[1:]
 		sender.fiber.Unblock()
 		sender.err = nil
@@ -215,6 +220,7 @@ func (fc *FiberChannel) ReceiveCtx(ctx context.Context, currentFiber *fiber.Fibe
 	}
 	if len(fc.senders) > 0 {
 		sender := fc.senders[0]
+		fc.senders[0] = nil // clear GC reference before slicing
 		fc.senders = fc.senders[1:]
 		sender.fiber.Unblock()
 		sender.err = nil
@@ -261,7 +267,9 @@ func (fc *FiberChannel) ReceiveCtx(ctx context.Context, currentFiber *fiber.Fibe
 func (fc *FiberChannel) removeReceiverLocked(waiter *channelReceiver) {
 	for i, r := range fc.receivers {
 		if r == waiter {
-			fc.receivers = append(fc.receivers[:i], fc.receivers[i+1:]...)
+			copy(fc.receivers[i:], fc.receivers[i+1:])
+			fc.receivers[len(fc.receivers)-1] = nil // clear now-unreachable tail slot
+			fc.receivers = fc.receivers[:len(fc.receivers)-1]
 			return
 		}
 	}
@@ -283,6 +291,7 @@ func (fc *FiberChannel) TrySend(value interface{}) (bool, error) {
 	}
 	if len(fc.receivers) > 0 {
 		receiver := fc.receivers[0]
+		fc.receivers[0] = nil // clear GC reference before slicing
 		fc.receivers = fc.receivers[1:]
 		receiver.value = value
 		receiver.err = nil
@@ -312,6 +321,7 @@ func (fc *FiberChannel) TryReceive() (interface{}, bool) {
 	}
 	if len(fc.senders) > 0 {
 		sender := fc.senders[0]
+		fc.senders[0] = nil // clear GC reference before slicing
 		fc.senders = fc.senders[1:]
 		sender.fiber.Unblock()
 		sender.err = nil
@@ -326,6 +336,7 @@ func (fc *FiberChannel) admitSenderLocked() {
 		return
 	}
 	sender := fc.senders[0]
+	fc.senders[0] = nil // clear GC reference before slicing
 	fc.senders = fc.senders[1:]
 	fc.buffer = append(fc.buffer, sender.value)
 	sender.fiber.Unblock()

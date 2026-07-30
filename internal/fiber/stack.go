@@ -2,7 +2,7 @@ package fiber
 
 import (
 	"fmt"
-	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -15,32 +15,42 @@ const (
 )
 
 // Stack is a bounded LIFO byte store used to model fiber stack usage.
+// sp is accessed via sync/atomic; Stack is single-owner so no concurrent
+// writers are expected. The sync.RWMutex has been removed.
 type Stack struct {
 	data []byte
+	sp   int64 // atomic stack pointer
 	size int
-	sp   int
-	mu   sync.RWMutex
 }
 
-// NewStack allocates a stack after clamping the requested size to the safety
-// bounds. It does not represent the Go runtime stack.
+// NewStack creates a stack with the given (clamped) capacity but defers the
+// backing-array allocation until the first Push. This makes construction O(1)
+// in memory: a 64 KB × 10,000 fiber program costs zero bytes until each fiber
+// actually pushes something onto its stack.
 func NewStack(size int) *Stack {
 	size = ValidateStackSize(size)
-	return &Stack{data: make([]byte, size), size: size}
+	return &Stack{size: size} // data intentionally nil (lazy)
 }
 
 // Push appends data and rejects requests that exceed the remaining capacity.
+// Lazy allocation is safe: Stack is single-owner (its fiber's goroutine is the
+// only writer). No concurrent Push calls occur.
 func (s *Stack) Push(data []byte) error {
 	if s == nil {
 		return fmt.Errorf("nil stack")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(data) > s.size-s.sp {
-		return fmt.Errorf("stack overflow: attempting to push %d bytes, only %d available", len(data), s.size-s.sp)
+	sp := atomic.LoadInt64(&s.sp)
+	newSP := sp + int64(len(data))
+	if newSP > int64(s.size) {
+		return fmt.Errorf("stack overflow: need %d bytes, have %d available",
+			len(data), int64(s.size)-sp)
 	}
-	copy(s.data[s.sp:], data)
-	s.sp += len(data)
+	// Lazily allocate the backing array on first Push.
+	if s.data == nil {
+		s.data = make([]byte, s.size)
+	}
+	copy(s.data[sp:], data)
+	atomic.StoreInt64(&s.sp, newSP)
 	return nil
 }
 
@@ -52,14 +62,18 @@ func (s *Stack) Pop(size int) ([]byte, error) {
 	if size < 0 {
 		return nil, fmt.Errorf("stack pop size must not be negative: %d", size)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if size > s.sp {
-		return nil, fmt.Errorf("stack underflow: attempting to pop %d bytes, only %d available", size, s.sp)
+	sp := atomic.LoadInt64(&s.sp)
+	if int64(size) > sp {
+		return nil, fmt.Errorf("stack underflow: want %d bytes, sp=%d", size, sp)
 	}
-	s.sp -= size
+	if s.data == nil {
+		// No data was ever pushed; this is a logic error if sp > 0.
+		return nil, fmt.Errorf("stack underflow: backing array not initialized")
+	}
+	newSP := sp - int64(size)
 	data := make([]byte, size)
-	copy(data, s.data[s.sp:s.sp+size])
+	copy(data, s.data[newSP:sp])
+	atomic.StoreInt64(&s.sp, newSP)
 	return data, nil
 }
 
@@ -68,9 +82,7 @@ func (s *Stack) Reset() {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	s.sp = 0
-	s.mu.Unlock()
+	atomic.StoreInt64(&s.sp, 0)
 }
 
 // Size returns total capacity in bytes.
@@ -78,8 +90,6 @@ func (s *Stack) Size() int {
 	if s == nil {
 		return 0
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.size
 }
 
@@ -88,9 +98,7 @@ func (s *Stack) Used() int {
 	if s == nil {
 		return 0
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.sp
+	return int(atomic.LoadInt64(&s.sp))
 }
 
 // Available returns unused capacity in bytes.
@@ -98,33 +106,36 @@ func (s *Stack) Available() int {
 	if s == nil {
 		return 0
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.size - s.sp
+	return s.size - int(atomic.LoadInt64(&s.sp))
 }
 
 // Usage returns the fraction of capacity currently used.
 func (s *Stack) Usage() float64 {
-	if s == nil {
+	if s == nil || s.size == 0 {
 		return 0
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.size == 0 {
-		return 0
-	}
-	return float64(s.sp) / float64(s.size)
+	return float64(atomic.LoadInt64(&s.sp)) / float64(s.size)
 }
 
-// Clone returns an independent copy of the stack contents.
+// Clone returns an independent copy of the stack contents. If the source stack
+// has never been written to (sp == 0), the clone is also lazy.
+//
+// Race safety: Push() writes s.data before the atomic store to s.sp, so an
+// acquire load of s.sp > 0 here guarantees s.data is visible (release-acquire
+// ordering through the atomic counter). We therefore use sp > 0 rather than
+// s.data != nil to avoid a data race on the pointer field itself.
 func (s *Stack) Clone() *Stack {
 	if s == nil {
 		return nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	clone := &Stack{data: make([]byte, s.size), size: s.size, sp: s.sp}
-	copy(clone.data, s.data)
+	sp := atomic.LoadInt64(&s.sp) // acquire load — synchronises with Push's release store
+	clone := &Stack{size: s.size}
+	if sp > 0 {
+		// s.data was initialised by Push before the atomic store that made sp > 0.
+		clone.data = make([]byte, s.size)
+		copy(clone.data, s.data)
+	}
+	atomic.StoreInt64(&clone.sp, sp)
 	return clone
 }
 
@@ -141,13 +152,12 @@ func (s *Stack) GetInfo() StackInfo {
 	if s == nil {
 		return StackInfo{}
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	used := int(atomic.LoadInt64(&s.sp))
 	return StackInfo{
 		Size:      s.size,
-		Used:      s.sp,
-		Available: s.size - s.sp,
-		Usage:     float64(s.sp) / float64(s.size),
+		Used:      used,
+		Available: s.size - used,
+		Usage:     float64(used) / float64(s.size),
 	}
 }
 

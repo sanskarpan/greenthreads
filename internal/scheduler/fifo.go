@@ -3,7 +3,7 @@ package scheduler
 import (
 	"fmt"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 // FIFOScheduler implements a First-In-First-Out scheduler
@@ -21,16 +21,23 @@ func NewFIFOScheduler() *FIFOScheduler {
 
 // Next returns the next fiber to run (first in queue)
 func (s *FIFOScheduler) Next() (*fiber.Fiber, error) {
+	s.mu.RLock()
+	stopped := s.stopped
+	s.mu.RUnlock()
+	if stopped {
+		return nil, fmt.Errorf("scheduler stopped")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Remove finished fibers. filterFinished only drops the entries; the
+	// Remove finished fibers. filterFinishedInPlace only drops the entries; the
 	// authoritative completion accounting happens in MarkCompleted, which
 	// the runtime calls in complete().
-	s.runQueue = s.filterFinished(s.runQueue)
+	s.runQueue = filterFinishedInPlace(s.runQueue)
 
 	if len(s.runQueue) == 0 {
-		return nil, fmt.Errorf("no fibers in run queue")
+		return nil, ErrNoFibers
 	}
 
 	// Get first fiber
@@ -40,16 +47,4 @@ func (s *FIFOScheduler) Next() (*fiber.Fiber, error) {
 	s.recordSwitch()
 
 	return f, nil
-}
-
-// filterFinished removes finished fibers from the queue. It does NOT update
-// completion statistics; that is the runtime's responsibility.
-func (s *FIFOScheduler) filterFinished(queue []*fiber.Fiber) []*fiber.Fiber {
-	filtered := make([]*fiber.Fiber, 0, len(queue))
-	for _, f := range queue {
-		if !f.IsFinished() {
-			filtered = append(filtered, f)
-		}
-	}
-	return filtered
 }

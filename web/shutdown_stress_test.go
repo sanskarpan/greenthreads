@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	greenthruntime "github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	greenthruntime "github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func TestStressMultipleConcurrentShutdowns(t *testing.T) {

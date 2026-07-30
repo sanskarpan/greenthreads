@@ -4,7 +4,7 @@ site_description: >-
   sync primitives, deadlock detection, Prometheus metrics, and a live WebSocket
   control plane — all in one statically linked binary.
 site_author: sanskarpan
-repo_url: https://github.com/sanskarpan/User-Level-Threading-Library
+repo_url: https://github.com/sanskarpan/greenthreads
 repo_name: sanskarpan/greenthreads
 edit_uri: edit/main/docs/
 

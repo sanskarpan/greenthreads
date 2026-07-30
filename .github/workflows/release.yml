@@ -3,12 +3,62 @@ name: Tag Main
 on:
   push:
     branches: [main]
+    # Only trigger auto-release when a commit message starts with "release:"
+    # to prevent every merge from creating a tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.2.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version: '1.21'
+      - name: Build server
+        run: go build -o /tmp/greenthreads-server ./cmd/server
+      - name: Start server
+        run: |
+          GREENTHREADS_AUTH_TOKEN=test-integration-token /tmp/greenthreads-server -listen 0.0.0.0:8080 &
+          echo $! > /tmp/server.pid
+      - name: Integration smoke test
+        run: |
+          # Wait up to 15 seconds for server to accept connections
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "Server failed to become ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          # Verify /healthz returns 200
+          curl -sf http://localhost:8080/healthz || exit 1
+          # Verify /metrics returns 200
+          curl -sf -H "Authorization: Bearer test-integration-token" http://localhost:8080/metrics || exit 1
+          echo "Integration test passed"
+      - name: Stop server
+        run: pkill greenthreads-server || true
+
   tag:
+    needs: [integration-test]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -18,13 +68,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          latest="$(git tag --list 'v*' --sort=-version:refname | head -n1)"
-          if [[ -z "$latest" ]]; then
-            next="v0.1.0"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            next="${{ github.event.inputs.version }}"
           else
-            version="${latest#v}"
-            IFS=. read -r major minor patch <<< "$version"
-            next="v${major}.${minor}.$((patch + 1))"
+            latest="$(git tag --list 'v*' --sort=-version:refname | head -n1)"
+            if [[ -z "$latest" ]]; then
+              next="v0.1.0"
+            else
+              version="${latest#v}"
+              IFS=. read -r major minor patch <<< "$version"
+              next="v${major}.${minor}.$((patch + 1))"
+            fi
           fi
           git tag -a "$next" -m "Release $next" "$GITHUB_SHA"
           git push origin "$next"
+          echo "next=$next" >> "$GITHUB_ENV"
+      - name: Generate SBOM
+        uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.17.2
+        with:
+          format: spdx-json
+          output-file: greenthreads-sbom.spdx.json
+      - name: Upload SBOM as release asset
+        if: github.event_name == 'workflow_dispatch'
+        run: gh release upload "$next" greenthreads-sbom.spdx.json --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

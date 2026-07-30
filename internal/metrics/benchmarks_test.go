@@ -3,7 +3,7 @@ package metrics
 import (
 	"testing"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 func BenchmarkMetricsRecord(b *testing.B) {

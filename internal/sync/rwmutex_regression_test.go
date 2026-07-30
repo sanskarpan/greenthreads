@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 // TestRWMutexStrandedReadersAfterWriterCancel is a regression test for the
@@ -55,18 +55,17 @@ func TestRWMutexStrandedReadersAfterWriterCancel(t *testing.T) {
 
 	// The final RUnlock from reader1 should now admit reader2. The reader
 	// is currently blocked on RLockCtx's select. We wait briefly for the
-	// reader2 goroutine to observe the grant and decrement its waiter
-	// queue. We verify by reading the mutex's internal state.
+	// reader2 goroutine to observe the grant.
 	frw.RUnlock()
 
-	// The stranded reader2 should have been admitted. We poll the
-	// mutex's reader count to confirm.
+	// Verify behaviorally: reader2 should be admitted (unblocked) after
+	// the RUnlock. We poll reader2.IsBlocked() until it becomes false,
+	// confirming the mutex admitted it without inspecting internal fields.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		frw.mu.Lock()
-		n := frw.readers
-		frw.mu.Unlock()
-		if n > 0 {
+		if !reader2.IsBlocked() {
+			// reader2 was admitted; release it so the test is hermetic.
+			frw.RUnlock()
 			return
 		}
 		time.Sleep(5 * time.Millisecond)

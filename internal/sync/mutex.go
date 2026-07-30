@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 type mutexWaiter struct {
@@ -97,13 +97,18 @@ func (fm *FiberMutex) LockCtx(ctx context.Context, currentFiber *fiber.Fiber) er
 func (fm *FiberMutex) removeWaiterLocked(waiter *mutexWaiter) {
 	for i, w := range fm.waitQueue {
 		if w == waiter {
-			fm.waitQueue = append(fm.waitQueue[:i], fm.waitQueue[i+1:]...)
+			copy(fm.waitQueue[i:], fm.waitQueue[i+1:])
+			fm.waitQueue[len(fm.waitQueue)-1] = nil // clear now-unreachable tail slot
+			fm.waitQueue = fm.waitQueue[:len(fm.waitQueue)-1]
 			return
 		}
 	}
 }
 
-// TryLock acquires the mutex only when it is immediately available.
+// TryLock attempts to acquire the mutex without blocking. Returns false if
+// the mutex is held or if currentFiber is nil (nil fiber is NOT treated as
+// a successful lock acquisition — callers must not proceed as if the lock
+// was acquired when TryLock returns false).
 func (fm *FiberMutex) TryLock(currentFiber *fiber.Fiber) bool {
 	if fm == nil || currentFiber == nil {
 		return false
@@ -137,6 +142,7 @@ func (fm *FiberMutex) Unlock(currentFiber *fiber.Fiber) {
 		return
 	}
 	next := fm.waitQueue[0]
+	fm.waitQueue[0] = nil // clear GC reference before slicing
 	fm.waitQueue = fm.waitQueue[1:]
 	fm.owner = next.fiber.ID
 	next.fiber.Unblock()
@@ -263,7 +269,9 @@ func (frw *FiberRWMutex) RLockCtx(ctx context.Context, currentFiber *fiber.Fiber
 func (frw *FiberRWMutex) removeReaderLocked(waiter *rwWaiter) {
 	for i, w := range frw.readerQueue {
 		if w == waiter {
-			frw.readerQueue = append(frw.readerQueue[:i], frw.readerQueue[i+1:]...)
+			copy(frw.readerQueue[i:], frw.readerQueue[i+1:])
+			frw.readerQueue[len(frw.readerQueue)-1] = nil // clear now-unreachable tail slot
+			frw.readerQueue = frw.readerQueue[:len(frw.readerQueue)-1]
 			return
 		}
 	}
@@ -368,7 +376,9 @@ func (frw *FiberRWMutex) LockCtx(ctx context.Context, currentFiber *fiber.Fiber)
 func (frw *FiberRWMutex) removeWriterLocked(waiter *rwWaiter) {
 	for i, w := range frw.writerQueue {
 		if w == waiter {
-			frw.writerQueue = append(frw.writerQueue[:i], frw.writerQueue[i+1:]...)
+			copy(frw.writerQueue[i:], frw.writerQueue[i+1:])
+			frw.writerQueue[len(frw.writerQueue)-1] = nil // clear now-unreachable tail slot
+			frw.writerQueue = frw.writerQueue[:len(frw.writerQueue)-1]
 			return
 		}
 	}
@@ -401,6 +411,7 @@ func (frw *FiberRWMutex) grantWriterLocked() bool {
 		return false
 	}
 	waiter := frw.writerQueue[0]
+	frw.writerQueue[0] = nil // clear GC reference before slicing
 	frw.writerQueue = frw.writerQueue[1:]
 	frw.writer = waiter.fiber.ID
 	waiter.fiber.Unblock()

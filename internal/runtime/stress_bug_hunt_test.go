@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
-	"github.com/sanskar/greenthreads/internal/scheduler"
-	fibersync "github.com/sanskar/greenthreads/internal/sync"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
+	fibersync "github.com/sanskarpan/greenthreads/internal/sync"
 )
 
 type gatedSchedule struct {
@@ -195,7 +195,7 @@ func TestStressResetDuringInflightDoesNotCorruptAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	rt.Reset()
+	_ = rt.Reset()
 	close(release)
 	waitFor(t, time.Second, func() bool { return rt.GetMetrics().TotalFibersCompleted > 0 })
 	snap := rt.GetMetrics()

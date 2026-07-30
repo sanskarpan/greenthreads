@@ -5,9 +5,9 @@
 Four scheduling algorithms. Fiber-aware sync primitives. Deadlock detection.
 Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/User-Level-Threading-Library/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/greenthreads/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/greenthreads/actions)
 [![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
-[![License](https://img.shields.io/github/license/sanskarpan/User-Level-Threading-Library?style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](https://github.com/sanskarpan/greenthreads/blob/main/LICENSE)
 
 ---
 
@@ -16,8 +16,8 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 **30 seconds to a running server:**
 
 ```bash
-git clone https://github.com/sanskarpan/User-Level-Threading-Library
-cd User-Level-Threading-Library
+git clone https://github.com/sanskarpan/greenthreads
+cd greenthreads
 go run ./cmd/server
 # open http://localhost:8080
 ```
@@ -29,8 +29,8 @@ import (
     "context"
     "fmt"
 
-    "github.com/sanskar/greenthreads/internal/runtime"
-    "github.com/sanskar/greenthreads/internal/scheduler"
+    "github.com/sanskarpan/greenthreads/internal/runtime"
+    "github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func main() {

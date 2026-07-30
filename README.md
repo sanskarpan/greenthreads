@@ -9,11 +9,11 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ---
 
-[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/User-Level-Threading-Library/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/greenthreads/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/greenthreads/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
-[![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/sanskarpan/User-Level-Threading-Library?style=flat-square)](LICENSE)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sanskarpan/User-Level-Threading-Library/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/User-Level-Threading-Library)
+[![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/greenthreads/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sanskarpan/greenthreads/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/greenthreads)
 
 </div>
 
@@ -51,8 +51,8 @@ import (
     "context"
     "fmt"
 
-    "github.com/sanskar/greenthreads/internal/runtime"
-    "github.com/sanskar/greenthreads/internal/scheduler"
+    "github.com/sanskarpan/greenthreads/internal/runtime"
+    "github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func main() {

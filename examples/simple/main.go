@@ -3,19 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func main() {
 	fmt.Println("=== Simple Green Threads Example ===")
 
-	// Create runtime with FIFO scheduler
+	// Create runtime with FIFO scheduler and 4 worker slots.
 	rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
 
-	// Start runtime
+	// Start runtime.
 	err := rt.Start()
 	if err != nil {
 		panic(err)
@@ -24,12 +25,23 @@ func main() {
 
 	fmt.Println("Runtime started with FIFO scheduler")
 
-	// Spawn some fibers
-	for i := 1; i <= 5; i++ {
-		id := i
-		name := fmt.Sprintf("Fiber-%d", id)
+	// Note: FiberWaitGroup is designed for fiber-to-fiber synchronization and
+	// requires a *fiber.Fiber argument obtained via rt.GetFiberDirect(fiberID)
+	// from inside a running fiber. For waiting from outside the runtime (e.g.,
+	// the main goroutine), use a regular channel or sync.WaitGroup captured in
+	// the fiber closure instead.
+	var wg sync.WaitGroup
+	results := make([]string, 5)
 
+	// Spawn some fibers.
+	for i := 0; i < 5; i++ {
+		i := i
+		name := fmt.Sprintf("Fiber-%d", i+1)
+
+		wg.Add(1)
 		fiberID, err := rt.Spawn(func() {
+			defer wg.Done()
+
 			fmt.Printf("[%s] Starting execution\n", name)
 			time.Sleep(100 * time.Millisecond)
 
@@ -38,21 +50,28 @@ func main() {
 				time.Sleep(50 * time.Millisecond)
 			}
 
+			results[i] = fmt.Sprintf("%s completed", name)
 			fmt.Printf("[%s] Completed\n", name)
 		}, name)
 
 		if err != nil {
+			wg.Done()
 			fmt.Printf("Error spawning fiber: %v\n", err)
 		} else {
 			fmt.Printf("Spawned %s (ID: %d)\n", name, fiberID)
 		}
 	}
 
-	// Wait for fibers to complete
+	// Wait for all fibers to finish via the shared WaitGroup.
 	fmt.Println("\nWaiting for fibers to complete...")
-	time.Sleep(2 * time.Second)
+	wg.Wait()
 
-	// Print metrics
+	fmt.Println("\n=== Results ===")
+	for _, r := range results {
+		fmt.Println(r)
+	}
+
+	// Print metrics.
 	metrics := rt.GetMetrics()
 	fmt.Println("\n=== Metrics ===")
 	fmt.Printf("Total Fibers Created: %d\n", metrics.TotalFibersCreated)

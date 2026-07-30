@@ -3,10 +3,12 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 func TestFiberMutexHandsOffOwnership(t *testing.T) {
@@ -46,7 +48,14 @@ func TestFiberRWMutexDoesNotDoubleCountReaders(t *testing.T) {
 		mutex.Lock(writer)
 		close(done)
 	}()
-	time.Sleep(10 * time.Millisecond)
+	// Poll until the writer is blocked, then release the reader.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if writer.IsBlocked() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	mutex.RUnlock()
 	select {
 	case <-done:
@@ -250,4 +259,35 @@ func TestFiberRWMutexRLockBlocking(t *testing.T) {
 		t.Fatal("reader was not unblocked after writer unlock")
 	}
 	rw.RUnlock()
+}
+
+func BenchmarkFiberMutexContended(b *testing.B) {
+	for _, n := range []int{2, 4, 8} {
+		n := n
+		b.Run(fmt.Sprintf("goroutines=%d", n), func(b *testing.B) {
+			mu := NewFiberMutex()
+			counter := 0
+			var wg sync.WaitGroup
+			iters := b.N / n
+			if iters < 1 {
+				iters = 1
+			}
+			b.ResetTimer()
+			for g := 0; g < n; g++ {
+				g := g
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					f := fiber.NewFiber(nil, fiber.DefaultStackSize, fmt.Sprintf("bench-%d", g))
+					for i := 0; i < iters; i++ {
+						mu.Lock(f)
+						counter++
+						mu.Unlock(f)
+					}
+				}()
+			}
+			wg.Wait()
+			_ = counter
+		})
+	}
 }

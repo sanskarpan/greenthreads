@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
-// RoundRobinScheduler implements a round-robin scheduler
-// Each fiber gets a time quantum and is rotated to the back of the queue
+// RoundRobinScheduler is a FIFO scheduler with a configurable time quantum.
+// The runtime does not automatically preempt fibers after their quantum; callers
+// can check ShouldPreempt() and cooperatively yield. Under the current execution
+// model, RoundRobinScheduler behaves identically to FIFOScheduler unless a caller
+// actively re-enqueues fibers on preemption.
 type RoundRobinScheduler struct {
 	*BaseScheduler
 	quantum     time.Duration
@@ -29,16 +32,23 @@ func NewRoundRobinScheduler(quantum time.Duration) *RoundRobinScheduler {
 
 // Next returns the next fiber to run
 func (s *RoundRobinScheduler) Next() (*fiber.Fiber, error) {
+	s.mu.RLock()
+	stopped := s.stopped
+	s.mu.RUnlock()
+	if stopped {
+		return nil, fmt.Errorf("scheduler stopped")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Remove finished fibers. filterFinished only drops the entries; the
+	// Remove finished fibers. filterFinishedInPlace only drops the entries; the
 	// authoritative completion accounting happens in MarkCompleted, which
 	// the runtime calls in complete().
-	s.runQueue = s.filterFinished(s.runQueue)
+	s.runQueue = filterFinishedInPlace(s.runQueue)
 
 	if len(s.runQueue) == 0 {
-		return nil, fmt.Errorf("no fibers in run queue")
+		return nil, ErrNoFibers
 	}
 
 	// Get first fiber
@@ -79,16 +89,4 @@ func (s *RoundRobinScheduler) ShouldPreempt() bool {
 	defer s.mu.RUnlock()
 
 	return time.Since(s.lastQuantum) >= s.quantum
-}
-
-// filterFinished removes finished fibers from the queue. It does NOT update
-// completion statistics; that is the runtime's responsibility.
-func (s *RoundRobinScheduler) filterFinished(queue []*fiber.Fiber) []*fiber.Fiber {
-	filtered := make([]*fiber.Fiber, 0, len(queue))
-	for _, f := range queue {
-		if !f.IsFinished() {
-			filtered = append(filtered, f)
-		}
-	}
-	return filtered
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 func BenchmarkSpawn(b *testing.B) {

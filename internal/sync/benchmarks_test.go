@@ -3,7 +3,7 @@ package sync
 import (
 	"testing"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 func BenchmarkMutexLockUnlock(b *testing.B) {

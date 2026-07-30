@@ -3,7 +3,7 @@ package scheduler
 import (
 	"testing"
 
-	"github.com/sanskar/greenthreads/internal/fiber"
+	"github.com/sanskarpan/greenthreads/internal/fiber"
 )
 
 func TestStressMarkCompletedIsIdempotentAndRemovesQueuedFiber(t *testing.T) {

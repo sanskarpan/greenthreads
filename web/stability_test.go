@@ -10,8 +10,8 @@ import (
 	"time"
 
 	ws "github.com/gorilla/websocket"
-	rt "github.com/sanskar/greenthreads/internal/runtime"
-	"github.com/sanskar/greenthreads/internal/scheduler"
+	rt "github.com/sanskarpan/greenthreads/internal/runtime"
+	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
 // TestStabilityLongRunning spawns and drains fibers continuously for 60 seconds,
