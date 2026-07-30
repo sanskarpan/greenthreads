@@ -9,11 +9,11 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ---
 
-[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/greenthreads/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/greenthreads/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/User-Level-Threading-Library/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
-[![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/greenthreads/actions)
-[![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/sanskar/greenthreads)](https://goreportcard.com/report/github.com/sanskar/greenthreads)
+[![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/User-Level-Threading-Library/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/sanskarpan/User-Level-Threading-Library?style=flat-square)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sanskarpan/User-Level-Threading-Library/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/User-Level-Threading-Library)
 
 </div>
 
@@ -21,28 +21,9 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ## Demo
 
-```
-$ go run ./cmd/server
-time=2026-07-29T10:00:00Z level=INFO msg="greenthreads server starting" addr=127.0.0.1:8080
-time=2026-07-29T10:00:00Z level=INFO msg="runtime ready" scheduler=fifo workers=4
+![greenthreads demo](assets/demo.gif)
 
-# In the browser control plane — spawning 3 fibers with priority scheduling:
-
-[fiber:1  name=critical   state=READY    priority=100]
-[fiber:2  name=background state=READY    priority=1  ]
-[fiber:3  name=normal     state=READY    priority=50 ]
-
-[fiber:1  name=critical   state=RUNNING  priority=100]  <-- dispatched first
-[fiber:3  name=normal     state=RUNNING  priority=50 ]  <-- dispatched second
-[fiber:1  name=critical   state=FINISHED priority=100]
-[fiber:3  name=normal     state=FINISHED priority=50 ]
-[fiber:2  name=background state=RUNNING  priority=1  ]  <-- dispatched last
-[fiber:2  name=background state=FINISHED priority=1  ]
-
-Metrics: spawned=3 completed=3 active=0 panics=0 ctx_switches=3
-```
-
-> **Live visualization**: open `http://localhost:8080` after `go run ./cmd/server` — a browser control plane lets you spawn fibers, watch state transitions, and inspect metrics in real time.
+> Open `http://localhost:8080` after `go run ./cmd/server` — a browser control plane lets you spawn fibers, watch state transitions, and inspect metrics in real time.
 
 ---
 
