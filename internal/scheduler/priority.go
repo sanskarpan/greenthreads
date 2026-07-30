@@ -343,7 +343,7 @@ func (pq *PriorityQueue) AgeAll() {
 	for i := range *pq {
 		priority := (*pq)[i].PriorityVal
 		if priority < 1<<30 {
-			(*pq)[i].Fiber.SetPriority(priority + 1)
+			(*pq)[i].SetPriority(priority + 1)
 			(*pq)[i].PriorityVal = priority + 1
 		}
 	}
@@ -354,7 +354,7 @@ func (pq *PriorityQueue) AgeAll() {
 func (pq *PriorityQueue) GetAll() []*fiber.Fiber {
 	fibers := make([]*fiber.Fiber, len(*pq))
 	for i, item := range *pq {
-		fibers[i] = item.Fiber.Clone()
+		fibers[i] = item.Clone()
 	}
 	sort.SliceStable(fibers, func(i, j int) bool {
 		if fibers[i].Priority == fibers[j].Priority {
