@@ -21,9 +21,29 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ## Demo
 
-![greenthreads demo](assets/demo.gif)
+![greenthreads live control plane](assets/demo.gif)
 
-> Open `http://localhost:8080` after `go run ./cmd/server` — a browser control plane lets you spawn fibers, watch state transitions, and inspect metrics in real time.
+> A live walkthrough of the browser control plane: initialise a runtime, pick a
+> scheduler, spawn fibers, and watch them transition **Ready → Running →
+> Finished** across workers while metrics, the event timeline, and the fiber
+> list update in real time.
+>
+> **▶ [Watch the full walkthrough (MP4)](assets/demo.mp4)** &nbsp;·&nbsp; run it
+> yourself with `go run ./cmd/server` and open `http://localhost:8080`.
+
+### Screenshots
+
+**Work-stealing scheduler — full dashboard**
+
+![Work-stealing dashboard](assets/screenshot-dashboard.png)
+
+**Fiber state visualization & event timeline**
+
+![Fiber state visualization](assets/screenshot-visualization.png)
+
+**Priority scheduler — mixed-criticality workload**
+
+![Priority scheduler dashboard](assets/screenshot-priority.png)
 
 ---
 

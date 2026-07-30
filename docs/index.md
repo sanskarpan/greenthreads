@@ -11,6 +11,24 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ---
 
+## Live demo
+
+![greenthreads live control plane](https://github.com/sanskarpan/greenthreads/raw/main/assets/demo.gif)
+
+The browser control plane lets you initialise a runtime, choose a scheduler,
+spawn fibers, and watch them transition **Ready → Running → Finished** across
+workers — with live metrics, an event timeline, and a per-fiber inspector.
+
+### Fiber state visualization & timeline
+
+![Fiber state visualization](assets/screenshot-visualization.png)
+
+### Priority scheduler — mixed-criticality workload
+
+![Priority scheduler dashboard](assets/screenshot-priority.png)
+
+---
+
 ## Quick start
 
 **30 seconds to a running server:**

@@ -9,3 +9,6 @@
 .idea/
 .vscode/
 .claude/worktrees/
+
+# MkDocs build output
+/site/
