@@ -95,7 +95,7 @@ func (s *PriorityScheduler) ageAllLocked() {
 	for i := range *s.pqueue {
 		if (*s.pqueue)[i].PriorityVal < 1<<30 {
 			(*s.pqueue)[i].PriorityVal++
-			(*s.pqueue)[i].Fiber.SetPriority((*s.pqueue)[i].PriorityVal)
+			(*s.pqueue)[i].SetPriority((*s.pqueue)[i].PriorityVal)
 		}
 	}
 	heap.Init(s.pqueue)
@@ -197,7 +197,7 @@ func (s *PriorityScheduler) UpdatePriority(id fiber.FiberID, priority int) error
 	defer s.mu.Unlock()
 	for i, item := range *s.pqueue {
 		if item.ID == id {
-			item.Fiber.SetPriority(priority)
+			item.SetPriority(priority)
 			(*s.pqueue)[i].PriorityVal = priority
 			heap.Fix(s.pqueue, item.index)
 			return nil
@@ -251,7 +251,7 @@ func (s *PriorityScheduler) Reheapify(id fiber.FiberID) bool {
 	for i := range *s.pqueue {
 		if (*s.pqueue)[i].ID == id {
 			// Refresh the cached priority so Less() sees the new value.
-			(*s.pqueue)[i].PriorityVal = (*s.pqueue)[i].Fiber.PriorityValue()
+			(*s.pqueue)[i].PriorityVal = (*s.pqueue)[i].PriorityValue()
 			heap.Fix(s.pqueue, (*s.pqueue)[i].index)
 			return true
 		}
