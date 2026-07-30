@@ -13,7 +13,7 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 [![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
 [![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/greenthreads/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](LICENSE)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sanskarpan/greenthreads/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/greenthreads)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/sanskarpan/greenthreads?style=flat-square&label=openssf)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/greenthreads)
 
 </div>
 
