@@ -94,7 +94,7 @@ dependency (`gorilla/websocket`).
 | TLS support via cert/key flags or environment variables | Stable |
 | Bearer token auth enforced on non-loopback binds | Stable |
 | Non-root, statically linked Docker image | Stable |
-| Race detector clean; fuzz seeds for all 9 fuzz functions | Stable |
+| Race detector clean; fuzz seeds for all 11 fuzz functions | Stable |
 
 ---
 

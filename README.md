@@ -102,7 +102,7 @@ docker run --rm -p 8080:8080 \
 | Optional pprof endpoint (`-pprof-addr`) | Stable |
 | Configurable log level via `LOG_LEVEL` | Stable |
 | Non-root, statically linked Docker image | Stable |
-| Race detector clean; fuzz seeds for all 9 fuzz functions | Stable |
+| Race detector clean; fuzz seeds for all 11 fuzz functions | Stable |
 
 ---
 
@@ -300,7 +300,7 @@ Invalid messages return a generic error response and do not expose internal deta
 | `-pprof-addr` | _(empty)_ | Address for the optional pprof HTTP endpoint (e.g., `localhost:6060`). |
 | `LOG_LEVEL` | `INFO` | Log verbosity. One of: `DEBUG`, `INFO`, `WARN`, `ERROR`. |
 
-WebSocket limits: 64 clients, 32 KiB messages, 30 messages/client/second, 10 000 max active fibers per runtime. These are compile-time constants in `internal/web/server.go`.
+WebSocket limits: 64 clients, 32 KiB messages, 30 messages/client/second, 10 000 max active fibers per runtime. These are compile-time constants in `web/server.go`.
 
 Use `NewServerWithConfig` to override limits and the origin allowlist when embedding the server in another application.
 
@@ -352,6 +352,7 @@ Under constant high-priority spawns, lower-priority fibers may be indefinitely d
 | [RUNBOOK.md](RUNBOOK.md) | Deployment, health checks, rollback, and failure diagnosis |
 | [CHANGELOG.md](CHANGELOG.md) | Version history and bug fixes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, standards, and required checks |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal design, package map, and flow diagrams |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 | [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy |
 | [ISSUES.md](ISSUES.md) | Open issues and tracked limitations |
