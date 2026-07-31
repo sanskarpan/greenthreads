@@ -383,9 +383,24 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		lifecycleWG.Wait()
 	}
 
-	// The lifecycle goroutines have returned. In-flight fiber functions may
-	// outlive the shutdown deadline; bound the join by ctx so a long-running
-	// fiber cannot hold shutdown indefinitely.
+	// The lifecycle goroutines have returned, so the execution loop is no
+	// longer dispatching and the scheduler queues are stable. Reap fibers that
+	// were admitted but never dispatched before Stop: clear the scheduler so
+	// they cannot execute in a subsequent Start (F1), and reverse their
+	// admission bookkeeping so WithMaxFibers and ActiveFibers are not leaked
+	// across Stop/Reset cycles (F2). This runs before the in-flight join below
+	// so it also cleans up when the join times out.
+	rt.mainFiberMu.RLock()
+	mainFiber := rt.mainFiber
+	rt.mainFiberMu.RUnlock()
+	var mainID fiber.FiberID
+	if mainFiber != nil {
+		mainID = mainFiber.ID
+	}
+	rt.reapPending(mainID)
+
+	// In-flight fiber functions may outlive the shutdown deadline; bound the
+	// join by ctx so a long-running fiber cannot hold shutdown indefinitely.
 	if fiberWG != nil {
 		waitDone := make(chan struct{})
 		go func() {
@@ -409,30 +424,49 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Clear any un-dispatched fibers from the scheduler queue.
-	// This ensures rt.fibers and scheduler state converge after Stop.
-	// Fibers that were scheduled but never dispatched before Stop remain in
-	// rt.fibers; reap them explicitly. Dispatched fibers are reaped by their
-	// own complete() call in the dispatch goroutine.
-	rt.mainFiberMu.RLock()
-	mainFiber := rt.mainFiber
-	rt.mainFiberMu.RUnlock()
-	rt.fibersMu.Lock()
-	for id, f := range rt.fibers {
-		if mainFiber != nil && id == mainFiber.ID {
-			continue
-		}
-		if f.IsFinished() || !f.IsRunnable() {
-			delete(rt.fibers, id)
-		}
-	}
-	rt.fibersMu.Unlock()
-
 	close(stopped)
 	rt.mu.Lock()
 	rt.stopped = closedChan()
 	rt.mu.Unlock()
 	return schedulerErr
+}
+
+// reapPending discards fibers that were admitted (Spawn incremented the cap
+// counter, the active-fiber metric, and inserted them into rt.fibers) but were
+// never dispatched before the run stopped. It must be called only after the
+// execution loop has returned, so no fiber can transition out of Ready
+// concurrently.
+//
+// A fiber still in StateReady at this point was never dispatched: no dispatch
+// goroutine exists for it, so its complete() will never run and it would
+// otherwise (a) survive in the scheduler queue and execute in the next run, and
+// (b) leak activeFiberCount forever. In-flight fibers are Running or Blocked (or
+// already removed by complete()); they are left untouched and finish via their
+// own complete() call, which keeps the accounting exactly-once.
+func (rt *Runtime) reapPending(mainID fiber.FiberID) {
+	// Empty the scheduler queues so no un-dispatched fiber survives into a
+	// subsequent Start.
+	rt.scheduler.Clear()
+
+	rt.fibersMu.Lock()
+	stackSizes := make([]int, 0)
+	for id, f := range rt.fibers {
+		if id == mainID {
+			continue
+		}
+		if f.IsRunnable() {
+			stackSizes = append(stackSizes, f.StackSize)
+			delete(rt.fibers, id)
+		}
+	}
+	rt.fibersMu.Unlock()
+
+	// Reverse admission bookkeeping outside fibersMu (metrics take their own
+	// lock). Each reaped fiber decrements the cap counter exactly once.
+	for _, ss := range stackSizes {
+		atomic.AddInt64(&rt.activeFiberCount, -1)
+		rt.metrics.RecordFiberCancelled(ss)
+	}
 }
 
 // Reset clears stopped runtime state. Start recreates the main observer fiber
@@ -571,6 +605,8 @@ func (rt *Runtime) complete(result fiberResult) {
 	details := "Fiber completed"
 	if err := f.Failure(); err != nil {
 		details = "Fiber failed"
+		// Count the panic so greenthreads_fiber_panics_total reflects reality.
+		rt.metrics.RecordFiberPanic()
 		// Write to stderr so operators see panics in server logs.
 		// A proper logger is not available here; use the event tracker and stderr.
 		fmt.Fprintf(os.Stderr, "greenthreads: fiber %d (%s) panicked: %v\npanic stack:\n%s\n",

@@ -519,8 +519,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(&b, "# HELP go_gc_duration_seconds A summary of GC invocation durations\n")
 	fmt.Fprintf(&b, "# TYPE go_gc_duration_seconds gauge\n")
 	fmt.Fprintf(&b, "go_gc_duration_seconds %f\n", float64(memStats.PauseTotalNs)/1e9)
-	// TODO OBS-5: greenthreads_fiber_panics_total — MetricsSnapshot.TotalFiberPanics
-	// does not exist yet; add it to metrics.MetricsSnapshot and wire it here.
+	// OBS-5: fibers whose function panicked and was recovered by the runtime.
+	// TotalFiberPanics is never reset, so it is monotonic across Stop/Reset.
+	writeMetric("greenthreads_fiber_panics_total", "Total fibers whose function panicked and was recovered.", "counter", m.TotalFiberPanics)
 
 	// OBS-5: Web-layer operational counters.
 	writeMetric("greenthreads_spawn_errors_total", "Fiber spawn attempts that returned an error.", "counter", s.spawnErrors.Load())

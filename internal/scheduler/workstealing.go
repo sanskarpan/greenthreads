@@ -21,10 +21,15 @@ type WorkStealingScheduler struct {
 	*BaseScheduler
 	workers    []*Worker
 	numWorkers int
-	// globalMu protects blockedQueue and is used as a struct-level lock for
-	// operations that must be atomic across all worker queues (BlockFiber,
-	// UnblockFiber).
-	globalMu      sync.RWMutex
+	// globalMu is used as a struct-level lock for operations that must be atomic
+	// across all worker queues (BlockFiber, UnblockFiber) and it exclusively
+	// guards `blocked`. The embedded BaseScheduler.blockedQueue is NOT used by
+	// this scheduler: routing every blocked-queue access through a single lock
+	// avoids the two-mutex data race that existed when BlockFiber wrote the base
+	// field under globalMu while GetBlockedQueue/Clear touched it under s.mu.
+	globalMu sync.RWMutex
+	// blocked holds fibers parked on sync primitives. Guarded by globalMu only.
+	blocked       []*fiber.Fiber
 	stealAttempts int64
 	stealSuccess  int64
 	nextWorker    uint64
@@ -209,7 +214,8 @@ func (s *WorkStealingScheduler) BlockFiber(f *fiber.Fiber) {
 			if qf.ID == f.ID {
 				w.localQueue = append(w.localQueue[:i], w.localQueue[i+1:]...)
 				w.mu.Unlock()
-				s.blockedQueue = append(s.blockedQueue, f)
+				s.blocked = append(s.blocked, f)
+				s.recordBlocked()
 				return
 			}
 		}
@@ -217,7 +223,17 @@ func (s *WorkStealingScheduler) BlockFiber(f *fiber.Fiber) {
 	}
 	// Not found in worker queues; append to blocked anyway to keep accounting
 	// consistent with callers that call BlockFiber before Schedule returns.
-	s.blockedQueue = append(s.blockedQueue, f)
+	s.blocked = append(s.blocked, f)
+	s.recordBlocked()
+}
+
+// recordBlocked increments the totalBlocked statistic under the base mutex.
+// Ordering is globalMu (held by the caller) -> s.mu; no path takes s.mu before
+// globalMu, so this cannot deadlock.
+func (s *WorkStealingScheduler) recordBlocked() {
+	s.mu.Lock()
+	s.totalBlocked++
+	s.mu.Unlock()
 }
 
 // UnblockFiber removes the fiber from the blocked queue and re-schedules it
@@ -229,10 +245,10 @@ func (s *WorkStealingScheduler) UnblockFiber(fiberID fiber.FiberID) error {
 
 	// Find and remove from blocked queue.
 	var bf *fiber.Fiber
-	for i, f := range s.blockedQueue {
+	for i, f := range s.blocked {
 		if f.ID == fiberID {
 			bf = f
-			s.blockedQueue = append(s.blockedQueue[:i], s.blockedQueue[i+1:]...)
+			s.blocked = append(s.blocked[:i], s.blocked[i+1:]...)
 			break
 		}
 	}
@@ -328,6 +344,19 @@ func (s *WorkStealingScheduler) GetRunQueue() []*fiber.Fiber {
 	return fibers
 }
 
+// GetBlockedQueue returns a snapshot of the blocked fibers. It overrides
+// BaseScheduler.GetBlockedQueue so the read is guarded by the same lock
+// (globalMu) that BlockFiber/UnblockFiber use to mutate `blocked`.
+func (s *WorkStealingScheduler) GetBlockedQueue() []*fiber.Fiber {
+	s.globalMu.RLock()
+	defer s.globalMu.RUnlock()
+	out := make([]*fiber.Fiber, len(s.blocked))
+	for i, f := range s.blocked {
+		out[i] = f.Clone()
+	}
+	return out
+}
+
 // GetWorkerQueues returns the state of all worker queues
 func (s *WorkStealingScheduler) GetWorkerQueues() [][]fiber.FiberID {
 	queues := make([][]fiber.FiberID, s.numWorkers)
@@ -404,6 +433,11 @@ func (s *WorkStealingScheduler) Clear() {
 		w.localQueue = make([]*fiber.Fiber, 0)
 		w.mu.Unlock()
 	}
+	// Reset the blocked queue under its own lock (globalMu), not the base's
+	// s.mu, so it is never accessed under two different mutexes.
+	s.globalMu.Lock()
+	s.blocked = nil
+	s.globalMu.Unlock()
 	s.mu.Lock()
 	s.stealAttempts = 0
 	s.stealSuccess = 0

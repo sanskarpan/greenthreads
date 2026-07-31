@@ -100,22 +100,33 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 	rt.mainFiberMu.RUnlock()
 	fibers := rt.GetAllFibers()
 	blocked := make([]*fiber.Fiber, 0)
-	runnable := 0
+	ready := 0
+	running := 0
 	for _, f := range fibers {
 		if f.ID == mainID {
 			continue
 		}
-		if f.IsBlocked() {
+		switch {
+		case f.IsBlocked():
 			blocked = append(blocked, f)
-		} else if f.IsRunnable() || f.State == fiber.StateRunning {
-			runnable++
+		case f.State == fiber.StateRunning:
+			running++
+		case f.IsRunnable():
+			ready++
 		}
 	}
-	// A no-progress state requires both that no fiber is runnable AND at least
-	// one is blocked. dd.timeout debounces the flag so a transient all-blocked
-	// moment does not raise a false alert; the state must persist past timeout.
+	// Determine whether the system can still make progress. A Running fiber will
+	// eventually finish and free its worker slot, so any running fiber counts as
+	// progress. When nothing is running, a Ready fiber can only advance if a
+	// worker slot is free to dispatch it into. Under the non-preemptive model a
+	// Blocked fiber holds its worker slot until another fiber unblocks it, so
+	// once every slot is occupied by a blocked fiber, waiting Ready fibers can
+	// never be dispatched either — the slot-exhaustion deadlock. The previous
+	// check counted any Ready fiber as progress and was therefore blind to that
+	// exact case (F3): the queued-but-undispatchable fiber masked the hang.
 	now := time.Now()
-	noRunnable := runnable == 0 && len(blocked) > 0
+	slotsAllBlocked := rt.numWorkers > 0 && len(blocked) >= rt.numWorkers
+	noRunnable := running == 0 && len(blocked) > 0 && (ready == 0 || slotsAllBlocked)
 
 	dd.mu.Lock()
 	defer dd.mu.Unlock()

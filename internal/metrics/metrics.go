@@ -188,6 +188,27 @@ func (m *Metrics) RecordFiberCompleted(f *fiber.Fiber) {
 	}
 }
 
+// RecordFiberCancelled records that a fiber was admitted (counted in
+// ActiveFibers and TotalStackMemory) but discarded before completing — e.g. an
+// un-dispatched fiber reaped when the runtime is stopped. It reverses the
+// bookkeeping done by RecordFiberCreated WITHOUT incrementing
+// TotalFibersCompleted, so a cancelled fiber is not mistaken for a completed
+// one. This keeps ActiveFibers accurate across Stop without a Reset.
+func (m *Metrics) RecordFiberCancelled(stackSize int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ActiveFibers > 0 {
+		m.ActiveFibers--
+	}
+	if m.TotalStackMemory >= int64(stackSize) {
+		m.TotalStackMemory -= int64(stackSize)
+	}
+	m.LastUpdateTime = time.Now()
+}
+
 // maxCompletedTracked bounds the size of the completed-id map. The cap is
 // generously larger than any plausible concurrently-active fiber count so
 // it never thrashes; it only protects against the long-running-runtime
