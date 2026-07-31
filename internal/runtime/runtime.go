@@ -43,6 +43,13 @@ type Runtime struct {
 	deadlockDetector *DeadlockDetector
 
 	fibers   map[fiber.FiberID]*fiber.Fiber
+	// admitted holds the IDs of fibers whose Spawn passed the stopped re-check
+	// (i.e. RecordFiberCreated ran and activeFiberCount is committed to them).
+	// It disambiguates a fully-admitted Ready fiber (owned by complete()/
+	// reapPending) from a fiber still mid-Spawn that its own rollback will
+	// decrement — without it, Stop's reap and Spawn's abort race to double-
+	// decrement activeFiberCount. Guarded by fibersMu.
+	admitted map[fiber.FiberID]struct{}
 	fibersMu sync.RWMutex
 	mainFiberMu sync.RWMutex
 	mainFiber *fiber.Fiber
@@ -124,6 +131,7 @@ func NewRuntime(schedulerType scheduler.SchedulerType, numWorkers int) *Runtime 
 		eventTracker:     metrics.NewEventTracker(10000),
 		deadlockDetector: NewDeadlockDetector(),
 		fibers:           map[fiber.FiberID]*fiber.Fiber{mainFiber.ID: mainFiber},
+		admitted:         make(map[fiber.FiberID]struct{}),
 		mainFiber:        mainFiber,
 		currentFiber:     mainFiber,
 		stackSize:        fiber.DefaultStackSize,
@@ -244,6 +252,14 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 		atomic.AddInt64(&rt.activeFiberCount, -1)
 		return 0, ErrStoppedDuringSpawn
 	}
+
+	// Commit admission: mark the fiber as fully admitted so Stop's reap can
+	// distinguish it from a fiber still mid-Spawn (which its own rollback owns).
+	// This must happen together with — and before — RecordFiberCreated so the
+	// admitted set and the ActiveFibers accounting agree.
+	rt.fibersMu.Lock()
+	rt.admitted[f.ID] = struct{}{}
+	rt.fibersMu.Unlock()
 
 	// Record metrics only after the fiber is confirmed to be live in the
 	// scheduler. This prevents the rollback paths above from leaving
@@ -454,9 +470,18 @@ func (rt *Runtime) reapPending(mainID fiber.FiberID) {
 		if id == mainID {
 			continue
 		}
+		// Only reap fibers whose admission is committed. A fiber that is Ready
+		// but NOT in `admitted` is still mid-Spawn; its own rollback owns the
+		// activeFiberCount decrement, and reaping it here would double-count
+		// (drives the counter negative — see the Spawn/Stop race). Deleting the
+		// admitted entry under the same lock claims the decrement exactly once.
+		if _, ok := rt.admitted[id]; !ok {
+			continue
+		}
 		if f.IsRunnable() {
 			stackSizes = append(stackSizes, f.StackSize)
 			delete(rt.fibers, id)
+			delete(rt.admitted, id)
 		}
 	}
 	rt.fibersMu.Unlock()
@@ -502,6 +527,7 @@ func (rt *Runtime) Reset() error {
 
 	rt.fibersMu.Lock()
 	rt.fibers = make(map[fiber.FiberID]*fiber.Fiber)
+	rt.admitted = make(map[fiber.FiberID]struct{})
 	rt.fibersMu.Unlock()
 	rt.scheduler.Clear()
 	rt.metrics.Reset()
@@ -618,8 +644,11 @@ func (rt *Runtime) complete(result fiberResult) {
 
 	// Reap the finished fiber so its bounded stack and state are released.
 	// The main observer fiber is never run and never finishes, so it stays.
+	// Clearing the admitted entry here means a later reapPending cannot also
+	// claim this fiber's decrement.
 	rt.fibersMu.Lock()
 	delete(rt.fibers, f.ID)
+	delete(rt.admitted, f.ID)
 	rt.fibersMu.Unlock()
 	atomic.AddInt64(&rt.activeFiberCount, -1)
 }

@@ -4,6 +4,7 @@ package web
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -267,7 +268,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/metrics", s.authorizedHandler(s.handleMetrics))
 	mux.Handle("/", staticHandler)
-	return securityHeaders(requestID(mux))
+	tlsEnabled := s.config.TLSCertFile != "" && s.config.TLSKeyFile != ""
+	return securityHeaders(requestID(mux), tlsEnabled)
 }
 
 // noCache sets Cache-Control: no-store on every response so browser clients
@@ -299,6 +301,18 @@ func (s *Server) Start(addr string) error {
 	if s.config.AllowTokenInQuery {
 		s.logger.Warn("AllowTokenInQuery is enabled: auth token will appear in URLs and may be logged")
 	}
+	// Fail fast on a missing/unreadable TLS cert or key BEFORE any listener or
+	// background goroutine is started, so a misconfiguration surfaces at startup
+	// rather than on the first HTTPS connection.
+	tlsEnabled := s.config.TLSCertFile != "" && s.config.TLSKeyFile != ""
+	if tlsEnabled {
+		if _, err := os.Stat(s.config.TLSCertFile); err != nil {
+			return fmt.Errorf("tls cert file %q: %w", s.config.TLSCertFile, err)
+		}
+		if _, err := os.Stat(s.config.TLSKeyFile); err != nil {
+			return fmt.Errorf("tls key file %q: %w", s.config.TLSKeyFile, err)
+		}
+	}
 	s.serverMu.Lock()
 	if s.httpServer != nil {
 		s.serverMu.Unlock()
@@ -319,7 +333,10 @@ func (s *Server) Start(addr string) error {
 	go s.broadcastLoop(s.ctx)
 
 	var listenErr error
-	if s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+	if tlsEnabled {
+		// Enforce a modern TLS floor. Go's default already negotiates TLS 1.3
+		// when possible, but pinning MinVersion refuses downgrade to <1.2.
+		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		s.logger.Info("starting TLS server", "addr", addr,
 			"cert", s.config.TLSCertFile)
 		listenErr = httpServer.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile)
@@ -417,13 +434,18 @@ func requestID(next http.Handler) http.Handler {
 // securityHeaders adds defense-in-depth response headers. The visualization
 // client builds DOM with textContent (no inline scripts), so a restrictive CSP
 // is safe and shrinks the blast radius of any future DOM-sink regression.
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(next http.Handler, hsts bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+		// HSTS is only meaningful — and only safe — over TLS; sending it on a
+		// plaintext dev server would poison the browser's HSTS cache for the host.
+		if hsts {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

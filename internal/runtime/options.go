@@ -60,6 +60,7 @@ func NewRuntimeWithOptions(opts ...RuntimeOption) *Runtime {
 		metrics:      metrics.NewMetrics(),
 		eventTracker: metrics.NewEventTracker(1000),
 		fibers:       make(map[fiber.FiberID]*fiber.Fiber),
+		admitted:     make(map[fiber.FiberID]struct{}),
 		stopped:      closedChan(),
 		stackSize:    fiber.DefaultStackSize,
 		numWorkers:   defaultNumWorkers(),
