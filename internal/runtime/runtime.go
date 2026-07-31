@@ -258,10 +258,19 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 	// the reap distinguish this fiber from one still mid-Spawn.
 	rt.fibersMu.Lock()
 	if stopping || rt.draining {
+		// The fiber may already have been dispatched and completed in the
+		// Schedule -> re-check window (see the fast-loop note above), in which
+		// case complete() already removed it and owns the decrement. Only the
+		// path that actually removes f from rt.fibers decrements the counter, so
+		// exactly one of {complete, reapPending, this rollback} does — never two.
+		_, present := rt.fibers[f.ID]
 		delete(rt.fibers, f.ID)
+		delete(rt.admitted, f.ID)
 		rt.fibersMu.Unlock()
 		_ = rt.scheduler.Remove(f.ID)
-		atomic.AddInt64(&rt.activeFiberCount, -1)
+		if present {
+			atomic.AddInt64(&rt.activeFiberCount, -1)
+		}
 		return 0, ErrStoppedDuringSpawn
 	}
 	rt.admitted[f.ID] = struct{}{}
@@ -659,13 +668,17 @@ func (rt *Runtime) complete(result fiberResult) {
 
 	// Reap the finished fiber so its bounded stack and state are released.
 	// The main observer fiber is never run and never finishes, so it stays.
-	// Clearing the admitted entry here means a later reapPending cannot also
-	// claim this fiber's decrement.
+	// Only the path that actually removes f from rt.fibers decrements the
+	// counter: if a concurrent Spawn-rollback (during Stop) already removed this
+	// fiber, it owns the decrement and we must not double-count.
 	rt.fibersMu.Lock()
+	_, present := rt.fibers[f.ID]
 	delete(rt.fibers, f.ID)
 	delete(rt.admitted, f.ID)
 	rt.fibersMu.Unlock()
-	atomic.AddInt64(&rt.activeFiberCount, -1)
+	if present {
+		atomic.AddInt64(&rt.activeFiberCount, -1)
+	}
 }
 
 // GetFiber returns an immutable snapshot by ID.
