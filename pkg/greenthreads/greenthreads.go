@@ -90,6 +90,20 @@ type SpawnGroup = runtime.SpawnGroup
 // MetricsSnapshot is an immutable point-in-time view of runtime statistics.
 type MetricsSnapshot = metrics.MetricsSnapshot
 
+// FiberEvent is a single lifecycle event, as returned by Runtime.GetEvents.
+type FiberEvent = metrics.FiberEvent
+
+// EventType classifies a [FiberEvent].
+type EventType = metrics.EventType
+
+// Scheduler is the scheduling-policy interface returned by
+// Runtime.GetScheduler. Most callers only need GetStats; the runtime owns the
+// scheduler's lifecycle, so do not Schedule/Next on it directly.
+type Scheduler = scheduler.Scheduler
+
+// SchedulerStats holds scheduler counters, from Scheduler.GetStats.
+type SchedulerStats = scheduler.SchedulerStats
+
 // DeadlockDetector surfaces suspected deadlocks. Access it via
 // Runtime.DeadlockDetector (nil-safe).
 type DeadlockDetector = runtime.DeadlockDetector
@@ -127,6 +141,18 @@ const (
 	// WorkStealing distributes fibers across per-worker queues and steals work
 	// when a worker runs idle.
 	WorkStealing SchedulerType = scheduler.TypeWorkStealing
+)
+
+// Event types reported by Runtime.GetEvents.
+const (
+	EventCreated       EventType = metrics.EventCreated
+	EventScheduled     EventType = metrics.EventScheduled
+	EventRunning       EventType = metrics.EventRunning
+	EventYielded       EventType = metrics.EventYielded
+	EventBlocked       EventType = metrics.EventBlocked
+	EventUnblocked     EventType = metrics.EventUnblocked
+	EventCompleted     EventType = metrics.EventCompleted
+	EventContextSwitch EventType = metrics.EventContextSwitch
 )
 
 // Fiber lifecycle states, as reported by a [FiberHandle].
