@@ -10,24 +10,30 @@ import (
 	"github.com/sanskarpan/greenthreads/internal/scheduler"
 )
 
-// TestSpawnStopRaceDoesNotCorruptFiberCount is the regression test for the
-// double-decrement race found in review: when Spawn races Stop, a fiber still
-// mid-Spawn (inserted as Ready but not yet committed) must be decremented by
-// exactly one of {Spawn rollback, reapPending} — never both. Before the fix,
-// both decremented and activeFiberCount went negative (observed -14).
+// TestSpawnStopRaceDoesNotCorruptFiberCount is the regression test for BOTH
+// directions of the Spawn/Stop accounting race found in review:
+//   - double-decrement: reapPending and Spawn's rollback both decrement one
+//     fiber, driving activeFiberCount NEGATIVE (observed -14); and
+//   - zero-decrement leak: a fiber committed AFTER reapPending scanned is never
+//     reaped and never completes, leaking the counter POSITIVE and permanently
+//     (observed growing 0 -> 8 across cycles).
 //
-// Run under `go test -race` to also catch any residual data race.
+// After every spawner has returned and the runtime has fully drained, the
+// counter must be EXACTLY 0 — not merely non-negative. Reusing one runtime
+// across cycles (Stop -> Reset -> Start) also proves the leak does not
+// accumulate. Run under `go test -race` to also catch data races.
 func TestSpawnStopRaceDoesNotCorruptFiberCount(t *testing.T) {
 	const iterations = 150
 	const spawners = 8
 	const perSpawner = 25
 
+	rt := NewRuntimeWithOptions(
+		WithSchedulerType(scheduler.TypeFIFO),
+		WithNumWorkers(2),
+		WithMaxFibers(10_000),
+	)
+
 	for iter := 0; iter < iterations; iter++ {
-		rt := NewRuntimeWithOptions(
-			WithSchedulerType(scheduler.TypeFIFO),
-			WithNumWorkers(2),
-			WithMaxFibers(10_000),
-		)
 		if err := rt.Start(); err != nil {
 			t.Fatalf("iter %d: start: %v", iter, err)
 		}
@@ -43,20 +49,25 @@ func TestSpawnStopRaceDoesNotCorruptFiberCount(t *testing.T) {
 			}()
 		}
 
-		// Stop concurrently with the in-flight spawners.
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// Stop concurrently with the in-flight spawners, generously so the
+		// deadline path is rare and the counter can fully settle.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = rt.Stop(ctx)
 		cancel()
 		wg.Wait()
 
-		// Allow any late in-flight completions to settle.
-		deadline := time.Now().Add(500 * time.Millisecond)
-		for atomic.LoadInt64(&rt.activeFiberCount) > 0 && time.Now().Before(deadline) {
+		// Wait for the counter to settle to exactly 0 after all completions.
+		deadline := time.Now().Add(2 * time.Second)
+		for atomic.LoadInt64(&rt.activeFiberCount) != 0 && time.Now().Before(deadline) {
 			time.Sleep(2 * time.Millisecond)
 		}
+		if got := atomic.LoadInt64(&rt.activeFiberCount); got != 0 {
+			t.Fatalf("iter %d: activeFiberCount = %d after full drain, want exactly 0 "+
+				"(negative => double-decrement; positive => committed-after-reap leak)", iter, got)
+		}
 
-		if got := atomic.LoadInt64(&rt.activeFiberCount); got < 0 {
-			t.Fatalf("iter %d: activeFiberCount corrupted (negative): %d", iter, got)
+		if err := rt.Reset(); err != nil {
+			t.Fatalf("iter %d: reset: %v", iter, err)
 		}
 	}
 }

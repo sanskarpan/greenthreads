@@ -598,10 +598,19 @@ func (s *Server) tokenMatches(presented string) bool {
 	if s.config.AuthToken == "" {
 		return true
 	}
-	if len(presented) != len(s.config.AuthToken) {
-		return false
+	// A token is valid if it matches the full-access token or the read-only
+	// token (when configured). Revalidation and the handshake gate both use
+	// this so a read-only client is neither rejected nor dropped mid-session.
+	if len(presented) == len(s.config.AuthToken) &&
+		subtle.ConstantTimeCompare([]byte(presented), []byte(s.config.AuthToken)) == 1 {
+		return true
 	}
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(s.config.AuthToken)) == 1
+	if s.config.ReadOnlyToken != "" &&
+		len(presented) == len(s.config.ReadOnlyToken) &&
+		subtle.ConstantTimeCompare([]byte(presented), []byte(s.config.ReadOnlyToken)) == 1 {
+		return true
+	}
+	return false
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -1171,10 +1180,12 @@ func (s *Server) authorized(r *http.Request) bool {
 	if token == "" && s.config.AllowTokenInQuery {
 		token = r.URL.Query().Get("token")
 	}
-	if token == "" || len(token) != len(s.config.AuthToken) {
+	if token == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(s.config.AuthToken)) == 1
+	// Accept either the full-access or the read-only token; read-only vs
+	// read-write is distinguished later by the handshake handler.
+	return s.tokenMatches(token)
 }
 
 func (s *Server) allowedOrigin(r *http.Request) bool {

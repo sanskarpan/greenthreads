@@ -50,6 +50,11 @@ type Runtime struct {
 	// decrement — without it, Stop's reap and Spawn's abort race to double-
 	// decrement activeFiberCount. Guarded by fibersMu.
 	admitted map[fiber.FiberID]struct{}
+	// draining is set true by reapPending (under fibersMu) once Stop begins its
+	// reap, and gates Spawn's admission commit so a fiber cannot be committed
+	// after the reap scan has already passed it (which would leak the counter).
+	// Cleared when a new run starts and on Reset. Guarded by fibersMu.
+	draining bool
 	fibersMu sync.RWMutex
 	mainFiberMu sync.RWMutex
 	mainFiber *fiber.Fiber
@@ -230,40 +235,41 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 		return 0, fmt.Errorf("schedule fiber: %w", err)
 	}
 
-	// Re-check stopped state. scheduler.Schedule can block on back-pressure
-	// and Stop may have completed in the meantime.
+	// Re-check stopped state. scheduler.Schedule can block on back-pressure and
+	// Stop may have begun in the meantime.
 	rt.mu.RLock()
 	runCtx := rt.runCtx
 	rt.mu.RUnlock()
-	var stillRunning bool
+	stopping := false
 	if runCtx != nil {
 		select {
 		case <-runCtx.Done():
-			stillRunning = false
+			stopping = true
 		default:
-			stillRunning = true
 		}
 	}
-	if !stillRunning {
-		_ = rt.scheduler.Remove(f.ID)
-		rt.fibersMu.Lock()
+
+	// Commit admission (or roll back) under fibersMu, atomically ordered against
+	// Stop's reap. reapPending sets rt.draining under this same lock before it
+	// scans, so every fiber is either committed-before-the-flag (visible to the
+	// scan and reaped exactly once) or blocked-by-the-flag (rolled back exactly
+	// once). Without this ordering a Spawn could commit AFTER reapPending scanned
+	// and leak activeFiberCount permanently. Marking admitted only on commit lets
+	// the reap distinguish this fiber from one still mid-Spawn.
+	rt.fibersMu.Lock()
+	if stopping || rt.draining {
 		delete(rt.fibers, f.ID)
 		rt.fibersMu.Unlock()
+		_ = rt.scheduler.Remove(f.ID)
 		atomic.AddInt64(&rt.activeFiberCount, -1)
 		return 0, ErrStoppedDuringSpawn
 	}
-
-	// Commit admission: mark the fiber as fully admitted so Stop's reap can
-	// distinguish it from a fiber still mid-Spawn (which its own rollback owns).
-	// This must happen together with — and before — RecordFiberCreated so the
-	// admitted set and the ActiveFibers accounting agree.
-	rt.fibersMu.Lock()
 	rt.admitted[f.ID] = struct{}{}
 	rt.fibersMu.Unlock()
 
-	// Record metrics only after the fiber is confirmed to be live in the
-	// scheduler. This prevents the rollback paths above from leaving
-	// ActiveFibers and TotalStackMemory inflated.
+	// Record metrics only after the fiber is confirmed to be admitted. This
+	// prevents the rollback paths above from leaving ActiveFibers and
+	// TotalStackMemory inflated.
 	rt.metrics.RecordFiberCreated(f.StackSize)
 	rt.eventTracker.RecordEvent(metrics.FiberEvent{
 		FiberID: f.ID, EventType: metrics.EventCreated, Timestamp: time.Now(),
@@ -321,6 +327,8 @@ func (rt *Runtime) StartWithContext(ctx context.Context) error {
 	mainFiber := rt.mainFiber
 	rt.fibersMu.Lock()
 	rt.fibers[mainFiber.ID] = mainFiber
+	// Clear the drain gate so the new run can admit fibers again.
+	rt.draining = false
 	rt.fibersMu.Unlock()
 	rt.mainFiberMu.Unlock()
 
@@ -465,6 +473,12 @@ func (rt *Runtime) reapPending(mainID fiber.FiberID) {
 	rt.scheduler.Clear()
 
 	rt.fibersMu.Lock()
+	// Setting draining under the same lock that guards the admission commit,
+	// and BEFORE the scan below, orders every Spawn commit against this reap:
+	// a commit either lands before this and is visible to the scan, or lands
+	// after and is refused by Spawn's draining check. Exactly-once in both
+	// directions.
+	rt.draining = true
 	stackSizes := make([]int, 0)
 	for id, f := range rt.fibers {
 		if id == mainID {
@@ -528,6 +542,7 @@ func (rt *Runtime) Reset() error {
 	rt.fibersMu.Lock()
 	rt.fibers = make(map[fiber.FiberID]*fiber.Fiber)
 	rt.admitted = make(map[fiber.FiberID]struct{})
+	rt.draining = false
 	rt.fibersMu.Unlock()
 	rt.scheduler.Clear()
 	rt.metrics.Reset()
