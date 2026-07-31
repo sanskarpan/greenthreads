@@ -12,3 +12,6 @@
 
 # MkDocs build output
 /site/
+
+# goreleaser build output
+/dist/

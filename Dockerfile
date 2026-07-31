@@ -1,10 +1,11 @@
-# Base image tags intentionally specify minor versions (not patch) to allow
-# automatic security patch updates in the runner. Pin to full digests in
-# production by running:
-#   docker pull <image>:<tag> && docker inspect --format='{{index .RepoDigests 0}}' <image>:<tag>
+# Base images are pinned to immutable digests for reproducible, tamper-evident
+# builds (OpenSSF Scorecard "Pinned-Dependencies"). The human-readable tag is
+# kept in the comment. To update: docker pull <image>:<tag> &&
+#   docker inspect --format='{{index .RepoDigests 0}}' <image>:<tag>
+# then replace the digest below. Dependabot's Docker ecosystem also bumps these.
 
-# Pin to golang:1.26-alpine. To update: docker pull golang:1.26-alpine && docker inspect --format='{{index .RepoDigests 0}}' golang:1.26-alpine
-FROM golang:1.26-alpine AS build
+# golang:1.26-alpine
+FROM golang@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -18,8 +19,8 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/greenthreads-server ./cmd/server
 
-# Pin to gcr.io/distroless/static-debian12:nonroot. To update: docker pull gcr.io/distroless/static-debian12:nonroot && docker inspect --format='{{index .RepoDigests 0}}' gcr.io/distroless/static-debian12:nonroot
-FROM gcr.io/distroless/static-debian12:nonroot
+# gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 
 COPY --from=build /out/greenthreads-server /greenthreads-server
 EXPOSE 8080

@@ -1,0 +1,61 @@
+# goreleaser configuration — cross-compiled release binaries + checksums.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: greenthreads
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: greenthreads-server
+    main: ./cmd/server
+    binary: greenthreads-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: sanskarpan
+    name: greenthreads
+  draft: false
+  prerelease: auto
+  # Attach the SBOM generated in the release job to the GitHub release.
+  extra_files:
+    - glob: ./greenthreads-sbom.spdx.json

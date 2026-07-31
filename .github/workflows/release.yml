@@ -85,18 +85,36 @@ jobs:
           fi
           git tag -a "$next" -m "Release $next" "$GITHUB_SHA"
           git push origin "$next"
-          echo "next=$next" >> "$GITHUB_ENV"
           echo "version=$next" >> "$GITHUB_OUTPUT"
+
+  # Cross-compiled binaries + checksums + SBOM, published to the GitHub release
+  # by goreleaser (which creates the release for the tag).
+  binaries:
+    needs: [tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Check out the release tag
+        run: git checkout "${{ needs.tag.outputs.version }}"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26'
       - name: Generate SBOM
         uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.17.2
         with:
           format: spdx-json
           output-file: greenthreads-sbom.spdx.json
-      - name: Upload SBOM as release asset
-        if: github.event_name == 'workflow_dispatch'
-        run: gh release upload "$next" greenthreads-sbom.spdx.json --clobber
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: '~> v2'
+          args: release --clean
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   # Build, push, and keyless-sign the container image so the deploy path
   # (deploy/k8s, `docker pull`) actually resolves an image. Runs after the tag
