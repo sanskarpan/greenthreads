@@ -902,6 +902,14 @@ correctness bugs. All verified by code review and regression tests.
 | OBS-5 (panics) | `greenthreads_fiber_panics_total` documented but never emitted | Fixed — `complete()` calls `RecordFiberPanic`; `/metrics` emits the counter. Regression: `TestFiberPanicIncrementsPanicMetric` |
 | SY-2 (detection) | Detector blind to the slot-exhaustion deadlock it exists for | Fixed — `checkForDeadlock` separates Ready/Running and flags when all worker slots are held by blocked fibers. Regression: `TestDetectorFlagsSlotExhaustionDeadlock` (the underlying non-preemptive *design* limitation remains — see SY-2 above) |
 
+**Known minor (not a correctness defect):** in the rare interleaving where a
+fiber is dispatched and completes inside Spawn's `Schedule -> re-check` window,
+`RecordFiberCompleted` can run without a matching `RecordFiberCreated`, causing
+bounded, self-clamping drift in the `ActiveFibers` gauge / `TotalFibersCompleted`
+counter. The cap-enforcing `activeFiberCount` stays exact (verified across four
+review rounds); only the observability numbers can transiently drift by a small
+amount. A tiny stale `admitted` map entry from the same race is cleared on Reset.
+
 ### Resolved: Original AUDIT.md Issues (26 issues)
 
 All 26 issues from the first-pass AUDIT.md are resolved. See `AUDIT.md` for their descriptions and delivery evidence. Key closures relevant to the current open issues:
