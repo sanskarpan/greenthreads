@@ -17,6 +17,10 @@ connected browser clients in real time.
 | `greenthreads_scheduler_queue_depth` | Gauge | Fibers waiting in the scheduler queue (Runnable state). |
 | `greenthreads_fiber_duration_seconds` | Histogram | End-to-end fiber execution time from Spawn to Done. |
 | `greenthreads_context_switches_total` | Counter | Scheduler dispatches (Next() calls that returned a fiber). |
+| `greenthreads_fiber_panics_total` | Counter | Fibers whose function panicked and was recovered. |
+| `greenthreads_deadlocks_total` | Counter | Deadlock episodes flagged by the detector (rising edge). |
+| `greenthreads_spawn_errors_total` | Counter | Spawn attempts that returned an error. |
+| `greenthreads_broadcast_messages_dropped_total` | Counter | WebSocket broadcast messages dropped due to a full client buffer. |
 
 The `/metrics` endpoint also exposes standard Go runtime metrics via
 `prometheus/client_golang`: goroutine count, heap allocation, GC pause, and
@@ -34,6 +38,34 @@ scrape_configs:
       type: Bearer
       credentials: <your-auth-token>
 ```
+
+---
+
+## Distributed tracing (OpenTelemetry)
+
+Tracing is **opt-in**. It activates only when an OTLP endpoint is configured;
+otherwise a no-op tracer is installed and there is zero overhead and no network
+activity.
+
+Enable it with the standard OpenTelemetry environment variables:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4318" \
+OTEL_SERVICE_NAME="greenthreads-server" \
+  ./greenthreads-server
+```
+
+What is instrumented:
+
+- **HTTP server spans** — one span per request to `/metrics`, `/ws`, `/healthz`,
+  `/readyz`, and the UI, via `otelhttp`. Incoming W3C `traceparent` headers are
+  honored so spans join an existing distributed trace.
+- **Control-plane command spans** — one span per WebSocket command
+  (`ws.init`, `ws.spawn`, `ws.stop`, `ws.reset`, `ws.getState`), attributed with
+  the command name and whether the client is read-only.
+
+The exporter uses OTLP over HTTP; point `OTEL_EXPORTER_OTLP_ENDPOINT` at any
+OTLP-compatible collector (OpenTelemetry Collector, Jaeger, Tempo, etc.).
 
 ---
 

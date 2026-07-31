@@ -10,7 +10,7 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 ---
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/greenthreads/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/greenthreads/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![Go](https://img.shields.io/badge/go-%3E%3D1.23-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
 [![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen?style=flat-square)](https://github.com/sanskarpan/greenthreads/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](LICENSE)
 [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/sanskarpan/greenthreads?style=flat-square&label=openssf)](https://securityscorecards.dev/viewer/?uri=github.com/sanskarpan/greenthreads)
@@ -49,7 +49,7 @@ Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 ## Why greenthreads?
 
-Go goroutines are excellent for concurrency, but they give you no control over dispatch order, no structured fan-out with error collection, and no built-in observability beyond `runtime/pprof`. greenthreads adds a thin scheduling layer on top of real goroutines: you choose FIFO, round-robin, priority, or work-stealing dispatch; you get structured `SpawnGroup` fan-out with unified error collection; and a Prometheus endpoint plus a live WebSocket control plane give you real-time visibility into every fiber's lifecycle. The entire stack ships as a single statically linked binary with one runtime dependency (`gorilla/websocket`).
+Go goroutines are excellent for concurrency, but they give you no control over dispatch order, no structured fan-out with error collection, and no built-in observability beyond `runtime/pprof`. greenthreads adds a thin scheduling layer on top of real goroutines: you choose FIFO, round-robin, priority, or work-stealing dispatch; you get structured `SpawnGroup` fan-out with unified error collection; and a Prometheus endpoint plus a live WebSocket control plane give you real-time visibility into every fiber's lifecycle. The entire stack ships as a single statically linked binary; the core control plane has one runtime dependency (`gorilla/websocket`), with OpenTelemetry pulled in only for opt-in distributed tracing (enabled via `OTEL_EXPORTER_OTLP_ENDPOINT`).
 
 ---
 

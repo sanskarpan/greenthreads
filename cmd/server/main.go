@@ -17,6 +17,7 @@ import (
 
 	"github.com/sanskarpan/greenthreads/internal/runtime"
 	"github.com/sanskarpan/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/tracing"
 	"github.com/sanskarpan/greenthreads/web"
 )
 
@@ -106,6 +107,22 @@ func main() {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 	logger.Info("starting greenthreads", "version", version, "build", buildInfo())
+
+	// Opt-in OpenTelemetry tracing (enabled only when OTEL_EXPORTER_OTLP_ENDPOINT
+	// is set). Safe to shut down unconditionally.
+	shutdownTracing, err := tracing.Setup(context.Background(), "greenthreads-server", version)
+	if err != nil {
+		logger.Error("failed to initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
+	if tracing.Enabled() {
+		logger.Info("OpenTelemetry tracing enabled")
+	}
 
 	if *pprofAddr != "" {
 		go func() {

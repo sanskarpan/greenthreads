@@ -29,6 +29,10 @@ import (
 	"github.com/sanskarpan/greenthreads/internal/metrics"
 	goruntime "github.com/sanskarpan/greenthreads/internal/runtime"
 	"github.com/sanskarpan/greenthreads/internal/scheduler"
+	"github.com/sanskarpan/greenthreads/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Static assets are embedded so serving does not depend on the process working
@@ -270,7 +274,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/metrics", s.authorizedHandler(s.handleMetrics))
 	mux.Handle("/", staticHandler)
 	tlsEnabled := s.config.TLSCertFile != "" && s.config.TLSKeyFile != ""
-	return securityHeaders(requestID(mux), tlsEnabled)
+	handler := securityHeaders(requestID(mux), tlsEnabled)
+	// Wrap with OpenTelemetry HTTP instrumentation: extracts propagated trace
+	// context and records a server span per request. No-op unless tracing is
+	// enabled (the global provider is a no-op provider by default).
+	return otelhttp.NewHandler(handler, "greenthreads.http",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
 }
 
 // noCache sets Cache-Control: no-store on every response so browser clients
@@ -740,6 +752,15 @@ func (s *Server) handleMessage(conn *websocket.Conn, msg Message, readOnly bool)
 		s.sendError(conn, "read-only client cannot execute: "+msg.Type)
 		return
 	}
+
+	// One span per control-plane command. No-op unless tracing is enabled.
+	_, span := tracing.Tracer().Start(context.Background(), "ws."+msg.Type)
+	span.SetAttributes(
+		attribute.String("greenthreads.command", msg.Type),
+		attribute.Bool("greenthreads.read_only", readOnly),
+	)
+	defer span.End()
+
 	switch msg.Type {
 	case "init":
 		s.handleInit(conn, msg)
@@ -752,6 +773,7 @@ func (s *Server) handleMessage(conn *websocket.Conn, msg Message, readOnly bool)
 	case "getState":
 		s.handleGetState(conn)
 	default:
+		span.SetStatus(codes.Error, "unknown message type")
 		s.sendError(conn, "unknown message type")
 	}
 }

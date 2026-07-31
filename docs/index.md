@@ -6,7 +6,7 @@ Four scheduling algorithms. Fiber-aware sync primitives. Deadlock detection.
 Prometheus metrics. A live WebSocket control plane — all in a single binary.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sanskarpan/greenthreads/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/sanskarpan/greenthreads/actions)
-[![Go](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![Go](https://img.shields.io/badge/go-%3E%3D1.23-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
 [![License](https://img.shields.io/github/license/sanskarpan/greenthreads?style=flat-square)](https://github.com/sanskarpan/greenthreads/blob/main/LICENSE)
 
 ---
@@ -91,8 +91,9 @@ on top of real goroutines:
 - Get a **Prometheus endpoint** and a **live WebSocket control plane** with
   real-time visibility into every fiber's lifecycle.
 
-The entire stack ships as a single statically linked binary with one runtime
-dependency (`gorilla/websocket`).
+The entire stack ships as a single statically linked binary; the core control
+plane has one runtime dependency (`gorilla/websocket`), with OpenTelemetry
+pulled in only for opt-in distributed tracing.
 
 ---
 
