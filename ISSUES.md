@@ -8,6 +8,13 @@ Severities: **Critical** (data loss / hard crash / exploitable) → **Major** (c
 
 ## Open Issues
 
+> **Reconciled 2026-07:** RT-4, RT-5, RT-6, SC-4, SC-6, SC-7 below were verified
+> already fixed, and RT-7 (fiber-cap leak), SC-8 (WorkStealing blocked-queue
+> race), the OBS-5 panic counter, and the SY-2 *detection* gap were fixed in the
+> correctness follow-up. See "Resolved: July 2026 Correctness Follow-up" for
+> evidence and regression tests. Entries are kept here for historical context;
+> their status lines note the resolution.
+
 ### Runtime & Deadlock Detector
 
 ---
@@ -92,9 +99,9 @@ After 2^63 `Next()` calls, the `atomic.AddInt64` counter wraps negative and `% s
 #### SY-2 · Major · Blocking primitives pin worker slots; bounded dispatch can hard-deadlock
 **File:** `internal/runtime/runtime.go:438-449`; `internal/sync/mutex.go`, `channel.go`, `waitgroup.go`
 
-A fiber parked inside `Lock`/`Receive`/`Wait` keeps its dispatch-goroutine alive and its worker slot occupied until its function returns. There is no "blocked fiber releases its slot" pathway. Scenario: `numWorkers` fibers all block on a `FiberChannel` receive whose sender fiber has not yet been dispatched → sender can never be dispatched → permanent deadlock. The deadlock detector will flag it but nothing can break the cycle.
+A fiber parked inside `Lock`/`Receive`/`Wait` keeps its dispatch-goroutine alive and its worker slot occupied until its function returns. There is no "blocked fiber releases its slot" pathway. Scenario: `numWorkers` fibers all block on a `FiberChannel` receive whose sender fiber has not yet been dispatched → sender can never be dispatched → permanent deadlock. The deadlock detector **now flags this** (fixed — see "Resolved: July 2026 Correctness Follow-up"), but nothing can break the cycle: detection is diagnostic only.
 
-This is a design-level property: the execution model commits a goroutine per dispatched fiber with no preemption or slot-release on block.
+This is a design-level property: the execution model commits a goroutine per dispatched fiber with no preemption or slot-release on block. The **detection** gap is resolved; the **design** limitation (no slot release on block) remains open and is documented below.
 
 **Fix (design):** Document this fundamental limitation in the package-level godoc and README. Add a runtime check: before parking a fiber, verify that at least one non-blocked worker slot exists; if not, log a warning. Long-term: consider an M:N dispatch model where blocked fibers release their slot.
 
@@ -650,12 +657,12 @@ The `/metrics` endpoint has no histogram for fiber run time. `AverageRunTime` in
 **File:** `web/server.go:371-408`
 
 The following have no counter at `/metrics`:
-- Fiber panics (`TotalFiberPanics`)
-- Failed spawn attempts (`SpawnErrors` — any error from `rt.Spawn`)
-- Deadlock detector events (`DeadlockEventsTotal`)
-- Dropped WebSocket broadcast messages (`BroadcastDroppedMessages`)
+- Fiber panics (`TotalFiberPanics`) — **RESOLVED:** `greenthreads_fiber_panics_total` is now emitted and incremented from `complete()`.
+- Failed spawn attempts (`SpawnErrors`) — RESOLVED: `greenthreads_spawn_errors_total` is emitted.
+- Dropped WebSocket broadcast messages — RESOLVED: `greenthreads_broadcast_messages_dropped_total` is emitted.
+- Deadlock detector events (`DeadlockEventsTotal`) — still open: no counter for detected deadlocks.
 
-An operator cannot alert on any of these conditions.
+Remaining: expose a deadlock-events counter so operators can alert on detection.
 
 **Fix:** Add counters for each. Increment them at the relevant code sites.
 
@@ -875,6 +882,25 @@ The following issues from the original 20-issue audit were confirmed fixed in co
 | WO-3 | Dead pprof import with misleading comment | Blank import and comment removed |
 | WO-4 | CI coverage gate (45%) far below actual coverage | Gate raised to 80% in `ci.yml` and `Makefile` |
 | WO-5 | CSP `connect-src` permits WebSocket to any host | Narrowed to `'self'` |
+
+### Resolved: July 2026 Correctness Follow-up
+
+A second scrutiny pass verified that several entries above the line were already
+fixed in the code but never moved out of "Open", and closed four remaining
+correctness bugs. All verified by code review and regression tests.
+
+| ID | Description | Fix / evidence |
+|---|---|---|
+| RT-4 | Spawn/Stop race: admission gated on Stop *completed* | Already fixed — re-check uses `runCtx.Done()` (`runtime.go` Spawn re-check), gating on Stop *initiated* |
+| RT-5 | Fiber-map leak + un-dispatched fibers survive Stop | Fixed — `Stop` now calls `reapPending`: clears the scheduler and reaps Ready (un-dispatched) fibers; `complete()` runs unconditionally in the dispatch goroutine so in-flight fibers no longer leak. Regression: `TestStopDoesNotRunUndispatchedFibersInNextRun` |
+| RT-6 | Detector config discarded on Start | Already fixed — `Start` copies `enabled`/`checkInterval`/`timeout` from the prior detector |
+| RT-7 | `WithMaxFibers` permanently exhausted across Stop/Reset (activeFiberCount leak) | Fixed — `reapPending` decrements `activeFiberCount` and the active-fiber metric for each reaped fiber via `metrics.RecordFiberCancelled`. Regression: `TestUndispatchedFibersDoNotLeakFiberCap` |
+| SC-4 | Priority `AgeAll` dead code / starvation | Already fixed — `ageAllLocked()` runs inside `PriorityScheduler.Next()` every 100 pops |
+| SC-6 | WorkStealing global queue write-dead | Already fixed — no `globalQueue` field remains; all fibers live in worker-local queues |
+| SC-7 | `nextWorker` int64 wraparound | Already fixed — `atomic.AddUint64` with `% uint64(numWorkers)` |
+| SC-8 | WorkStealing `blockedQueue` guarded by two different mutexes (data race) | Fixed — WS owns a `blocked` slice guarded solely by `globalMu`, with overridden `GetBlockedQueue`/`Clear`; base `blockedQueue` no longer used by WS |
+| OBS-5 (panics) | `greenthreads_fiber_panics_total` documented but never emitted | Fixed — `complete()` calls `RecordFiberPanic`; `/metrics` emits the counter. Regression: `TestFiberPanicIncrementsPanicMetric` |
+| SY-2 (detection) | Detector blind to the slot-exhaustion deadlock it exists for | Fixed — `checkForDeadlock` separates Ready/Running and flags when all worker slots are held by blocked fibers. Regression: `TestDetectorFlagsSlotExhaustionDeadlock` (the underlying non-preemptive *design* limitation remains — see SY-2 above) |
 
 ### Resolved: Original AUDIT.md Issues (26 issues)
 

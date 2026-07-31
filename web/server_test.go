@@ -284,6 +284,51 @@ func TestMetricsEndpointHasPrometheusMetadata(t *testing.T) {
 	}
 }
 
+// TestMetricsEmitsFiberPanicsTotal is the web-layer regression guard for the
+// previously-phantom greenthreads_fiber_panics_total metric (OBS-5): a
+// recovered fiber panic must be both counted and exposed at /metrics.
+func TestMetricsEmitsFiberPanicsTotal(t *testing.T) {
+	t.Parallel()
+	rt := runtime.NewRuntime(scheduler.TypeFIFO, 2)
+	server := NewServer(rt)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	}()
+
+	if _, err := rt.Spawn(func() { panic("boom") }, "panicker"); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Get(ts.URL + "/metrics")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		text := string(body)
+		if !strings.Contains(text, "# TYPE greenthreads_fiber_panics_total counter") {
+			t.Fatalf("metrics missing greenthreads_fiber_panics_total TYPE line:\n%s", text)
+		}
+		if v, ok := metricsValue(text, "greenthreads_fiber_panics_total"); ok && v == "1" {
+			return // counted exactly once
+		}
+		if time.Now().After(deadline) {
+			v, _ := metricsValue(text, "greenthreads_fiber_panics_total")
+			t.Fatalf("greenthreads_fiber_panics_total = %q, want 1", v)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestSecurityHeadersAppliedToResponses is a regression guard for AUDIT ID 21:
 // every response carries defense-in-depth headers (CSP, nosniff, frame deny).
 func TestSecurityHeadersAppliedToResponses(t *testing.T) {
