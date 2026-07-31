@@ -15,3 +15,6 @@
 
 # goreleaser build output
 /dist/
+
+# Release SBOM (generated in CI)
+/greenthreads-sbom.spdx.json
