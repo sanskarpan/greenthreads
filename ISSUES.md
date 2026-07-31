@@ -900,6 +900,14 @@ correctness bugs. All verified by code review and regression tests.
 | OBS-5 (panics) | `greenthreads_fiber_panics_total` documented but never emitted | Fixed — `complete()` calls `RecordFiberPanic`; `/metrics` emits the counter. Regression: `TestFiberPanicIncrementsPanicMetric` |
 | SY-2 (detection) | Detector blind to the slot-exhaustion deadlock it exists for | Fixed — `checkForDeadlock` separates Ready/Running and flags when all worker slots are held by blocked fibers. Regression: `TestDetectorFlagsSlotExhaustionDeadlock` (the underlying non-preemptive *design* limitation remains — see SY-2 above) |
 
+**Resolved — stable public API:** `pkg/greenthreads` is now the promoted,
+semver-stable public surface (the only package external code should import).
+It re-exports the runtime, scheduler types, sync primitives, sentinel errors
+(`ErrMaxFibersReached`, `ErrNotStarted`, …), fiber states, and options, with
+package-level godoc and runnable examples; a public `Runtime.DeadlockDetector()`
+accessor was added so the detector is reachable without touching `internal/`.
+Coverage 100%. README/docs quick-starts now import the public package.
+
 **Resolved — metrics-gauge drift:** the `ActiveFibers` gauge previously could
 drift by a bounded amount in the fast-loop-during-Spawn race. `GetMetrics`/
 `GetLifetimeMetrics` now source `ActiveFibers` directly from the exact

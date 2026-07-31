@@ -133,6 +133,42 @@ func ExampleRuntime_SpawnWithResult() {
 	// answer: 42
 }
 
+// ExampleNewFiberChannelOf shows two fibers exchanging a typed value over a
+// rendezvous FiberChannel. Each fiber obtains its own *Fiber (required by the
+// blocking primitives) via Runtime.GetFiberDirect. The start channel guarantees
+// both fiber IDs are assigned before either fiber runs.
+func ExampleNewFiberChannelOf() {
+	rt := gt.New(gt.FIFO, 2)
+	if err := rt.Start(); err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	ch := gt.NewFiberChannelOf[int](0) // 0 = rendezvous
+	start := make(chan struct{})
+	result := make(chan int, 1)
+
+	var producerID gt.FiberID
+	producerID, _ = rt.Spawn(func() {
+		<-start
+		f, _ := rt.GetFiberDirect(producerID)
+		_ = ch.Send(6*7, f)
+	}, "producer")
+
+	var consumerID gt.FiberID
+	consumerID, _ = rt.Spawn(func() {
+		<-start
+		f, _ := rt.GetFiberDirect(consumerID)
+		v, _ := ch.Receive(f)
+		result <- v
+	}, "consumer")
+
+	close(start) // both IDs are set; release the fibers
+	fmt.Println("received:", <-result)
+	// Output:
+	// received: 42
+}
+
 // ExampleRuntime_GetMetrics shows how to read runtime statistics after a
 // batch of fibers has completed.
 func ExampleRuntime_GetMetrics() {

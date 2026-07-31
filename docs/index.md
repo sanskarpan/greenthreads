@@ -40,31 +40,32 @@ go run ./cmd/server
 # open http://localhost:8080
 ```
 
-**Use the scheduler in Go code:**
+**Use it as a library** via the stable `pkg/greenthreads` API (the only package
+external code imports):
 
 ```go
 import (
     "context"
     "fmt"
 
-    "github.com/sanskarpan/greenthreads/internal/runtime"
-    "github.com/sanskarpan/greenthreads/internal/scheduler"
+    "github.com/sanskarpan/greenthreads/pkg/greenthreads"
 )
 
 func main() {
-    rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
+    rt := greenthreads.New(greenthreads.WorkStealing, 4)
     if err := rt.Start(); err != nil {
         panic(err)
     }
     defer rt.Stop(context.Background())
 
-    id, err := rt.Spawn(func() {
+    done := make(chan struct{})
+    if _, err := rt.Spawn(func() {
         fmt.Println("hello from fiber")
-    }, "greeter")
-    if err != nil {
+        close(done)
+    }, "greeter"); err != nil {
         panic(err)
     }
-    fmt.Printf("spawned fiber %d\n", id)
+    <-done
 }
 ```
 

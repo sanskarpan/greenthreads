@@ -709,6 +709,20 @@ func (rt *Runtime) GetFiberDirect(id fiber.FiberID) (*fiber.Fiber, error) {
 	return f, nil
 }
 
+// DeadlockDetector returns the runtime's deadlock detector, used to enable
+// detection and query suspected deadlocks. The returned detector is nil-safe:
+// its methods may be called even when this returns nil (before the first
+// Start). The current detector is replaced on each Start, preserving the
+// prior enabled/interval/timeout configuration.
+func (rt *Runtime) DeadlockDetector() *DeadlockDetector {
+	if rt == nil {
+		return nil
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.deadlockDetector
+}
+
 // GetAllFibers returns deterministic snapshots ordered by ID.
 func (rt *Runtime) GetAllFibers() []*fiber.Fiber {
 	rt.fibersMu.RLock()

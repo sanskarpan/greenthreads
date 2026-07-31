@@ -64,33 +64,35 @@ go run ./cmd/server
 # open http://localhost:8080
 ```
 
-**Use the scheduler in Go code** (note: packages are currently under `internal/`; a stable `pkg/` public API is planned — see `ISSUES.md`):
+**Use it as a library** via the stable public API in `pkg/greenthreads` (the only package external code should import; everything under `internal/` is an implementation detail):
 
 ```go
 import (
     "context"
     "fmt"
 
-    "github.com/sanskarpan/greenthreads/internal/runtime"
-    "github.com/sanskarpan/greenthreads/internal/scheduler"
+    "github.com/sanskarpan/greenthreads/pkg/greenthreads"
 )
 
 func main() {
-    rt := runtime.NewRuntime(scheduler.TypeFIFO, 4)
+    rt := greenthreads.New(greenthreads.WorkStealing, 4)
     if err := rt.Start(); err != nil {
         panic(err)
     }
     defer rt.Stop(context.Background())
 
-    id, err := rt.Spawn(func() {
+    done := make(chan struct{})
+    if _, err := rt.Spawn(func() {
         fmt.Println("hello from fiber")
-    }, "greeter")
-    if err != nil {
+        close(done)
+    }, "greeter"); err != nil {
         panic(err)
     }
-    fmt.Printf("spawned fiber %d\n", id)
+    <-done
 }
 ```
+
+See the [package documentation](https://pkg.go.dev/github.com/sanskarpan/greenthreads/pkg/greenthreads) for the full API — schedulers, `SpawnGroup` fan-out, `SpawnWithResult`, fiber-aware sync primitives, metrics, and the deadlock detector.
 
 **Docker:**
 
