@@ -71,6 +71,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Annotated tags require a committer identity, which the runner does
+          # not set by default.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             next="${{ github.event.inputs.version }}"
           else
