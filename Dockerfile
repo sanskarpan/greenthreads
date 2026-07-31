@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /out/greenthreads-server ./cmd/server
 
 # gcr.io/distroless/static-debian12:nonroot
-FROM gcr.io/distroless/static-debian12@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+FROM gcr.io/distroless/static-debian12@sha256:a9fcaedd4c9b59e12dd65d954f0b5044f19b0647a8a3712e77205df9e7b102cd
 
 COPY --from=build /out/greenthreads-server /greenthreads-server
 EXPOSE 8080
