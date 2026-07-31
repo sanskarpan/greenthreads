@@ -1,0 +1,13 @@
+# Keep at least one greenthreads replica available during voluntary
+# disruptions (node drains, cluster upgrades). Pairs with replicas: 2.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: greenthreads
+  labels:
+    app: greenthreads
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: greenthreads

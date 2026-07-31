@@ -10,7 +10,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/greenthreads-server ./cmd/server
+# VERSION is injected by the release workflow so the binary self-reports its
+# release tag (greenthreads-server -version). Defaults to "docker" for local
+# builds that do not pass the arg.
+ARG VERSION=docker
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/greenthreads-server ./cmd/server
 
 # Pin to gcr.io/distroless/static-debian12:nonroot. To update: docker pull gcr.io/distroless/static-debian12:nonroot && docker inspect --format='{{index .RepoDigests 0}}' gcr.io/distroless/static-debian12:nonroot
 FROM gcr.io/distroless/static-debian12:nonroot

@@ -1,0 +1,39 @@
+# Default-deny ingress/egress for greenthreads, then allow only what the
+# service needs. The RUNBOOK relies on network policy to keep the
+# auth-bearing /metrics and /ws surface reachable only from intended sources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: greenthreads
+  labels:
+    app: greenthreads
+spec:
+  podSelector:
+    matchLabels:
+      app: greenthreads
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow HTTP/WS from pods explicitly labelled as allowed clients (e.g. an
+    # ingress controller or a Prometheus scraper). Adjust the selectors to your
+    # cluster. Without a matching label, traffic is denied.
+    - from:
+        - podSelector:
+            matchLabels:
+              greenthreads-client: "true"
+        - namespaceSelector:
+            matchLabels:
+              greenthreads-ingress: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS resolution only. The server makes no other outbound connections.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

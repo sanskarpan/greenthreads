@@ -5,7 +5,10 @@ metadata:
   labels:
     app: greenthreads
 spec:
-  replicas: 1
+  # Runtime state is in-memory and per-pod, so this is not a horizontally-shared
+  # service; 2 replicas give availability during rolling updates / node drains
+  # (see the PodDisruptionBudget). Each replica is independent.
+  replicas: 2
   selector:
     matchLabels:
       app: greenthreads
@@ -18,9 +21,20 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
+      # No Kubernetes API access is needed; drop the token to shrink the
+      # attack surface.
+      automountServiceAccountToken: false
+      securityContext:
+        # Complete the Restricted Pod Security Standard baseline.
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 65532
       containers:
       - name: greenthreads
-        image: greenthreads:latest
+        # Published by the release workflow. Pin to an immutable digest in
+        # production (e.g. ghcr.io/sanskarpan/greenthreads@sha256:...).
+        image: ghcr.io/sanskarpan/greenthreads:latest
         ports:
         - containerPort: 8080
           name: http

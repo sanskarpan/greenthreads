@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof" // #nosec G108 -- pprof only activated when -pprof-addr flag is set
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,13 +20,64 @@ import (
 	"github.com/sanskarpan/greenthreads/web"
 )
 
+// Build metadata. version is injected at release build time via
+//
+//	-ldflags "-X main.version=v1.2.3"
+//
+// commit and date fall back to the values the Go toolchain embeds from VCS
+// (available when built from a git checkout), so an unstamped `go build` still
+// self-reports something useful.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
+// buildInfo returns a single-line version string, filling commit/date from the
+// embedded build info when they were not injected via ldflags.
+func buildInfo() string {
+	c, d := commit, date
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				if c == "" {
+					c = s.Value
+				}
+			case "vcs.time":
+				if d == "" {
+					d = s.Value
+				}
+			}
+		}
+	}
+	if len(c) > 12 {
+		c = c[:12]
+	}
+	out := "greenthreads " + version
+	if c != "" {
+		out += " (" + c
+		if d != "" {
+			out += ", " + d
+		}
+		out += ")"
+	}
+	return out
+}
+
 func main() {
 	port := flag.String("port", "8080", "TCP port used when -listen is not set")
 	listen := flag.String("listen", "", "listen address; defaults to 127.0.0.1:<port>")
 	pprofAddr := flag.String("pprof-addr", "", "address to serve pprof on (e.g. localhost:6060); empty disables pprof")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate PEM file (enables TLS when set with -tls-key)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key PEM file (enables TLS when set with -tls-cert)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(buildInfo())
+		return
+	}
 
 	addr := *listen
 	if addr == "" {
@@ -53,6 +105,7 @@ func main() {
 	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+	logger.Info("starting greenthreads", "version", version, "build", buildInfo())
 
 	if *pprofAddr != "" {
 		go func() {
