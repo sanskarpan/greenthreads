@@ -277,6 +277,8 @@ func TestMetricsEndpointHasPrometheusMetadata(t *testing.T) {
 		"# HELP greenthreads_steal_attempts",
 		"# HELP greenthreads_peak_fiber_count",
 		"# HELP greenthreads_uptime_seconds",
+		"# TYPE greenthreads_fiber_panics_total counter",
+		"# TYPE greenthreads_deadlocks_total counter",
 	} {
 		if !strings.Contains(text, name) {
 			t.Errorf("metrics body missing %q\n%s", name, text)

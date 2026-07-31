@@ -142,6 +142,11 @@ func (dd *DeadlockDetector) checkForDeadlock(rt *Runtime) {
 	deadlocked := noRunnable && now.Sub(dd.lastProgress) >= dd.timeout
 	if deadlocked && !dd.deadlockActive {
 		dd.deadlockActive = true
+		// Count the episode once (on the rising edge) for
+		// greenthreads_deadlocks_total.
+		if rt.metrics != nil {
+			rt.metrics.RecordDeadlockDetected()
+		}
 		dd.deadlocks = append(dd.deadlocks, DeadlockInfo{
 			DetectedAt:    now,
 			BlockedFibers: cloneFibers(blocked),

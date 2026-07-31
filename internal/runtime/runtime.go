@@ -18,10 +18,10 @@ import (
 
 // Sentinel errors returned by Runtime methods. Callers may test with errors.Is.
 var (
-	ErrNotStarted        = errors.New("runtime not started")
-	ErrAlreadyRunning    = errors.New("runtime already running")
+	ErrNotStarted         = errors.New("runtime not started")
+	ErrAlreadyRunning     = errors.New("runtime already running")
 	ErrStoppedDuringSpawn = errors.New("runtime stopped during spawn")
-	ErrNilRuntime        = errors.New("nil runtime")
+	ErrNilRuntime         = errors.New("nil runtime")
 )
 
 const (
@@ -42,7 +42,7 @@ type Runtime struct {
 	eventTracker     *metrics.EventTracker
 	deadlockDetector *DeadlockDetector
 
-	fibers   map[fiber.FiberID]*fiber.Fiber
+	fibers map[fiber.FiberID]*fiber.Fiber
 	// admitted holds the IDs of fibers whose Spawn passed the stopped re-check
 	// (i.e. RecordFiberCreated ran and activeFiberCount is committed to them).
 	// It disambiguates a fully-admitted Ready fiber (owned by complete()/
@@ -54,10 +54,10 @@ type Runtime struct {
 	// reap, and gates Spawn's admission commit so a fiber cannot be committed
 	// after the reap scan has already passed it (which would leak the counter).
 	// Cleared when a new run starts and on Reset. Guarded by fibersMu.
-	draining bool
-	fibersMu sync.RWMutex
+	draining    bool
+	fibersMu    sync.RWMutex
 	mainFiberMu sync.RWMutex
-	mainFiber *fiber.Fiber
+	mainFiber   *fiber.Fiber
 
 	stackSize  int
 	numWorkers int
@@ -83,13 +83,13 @@ type Runtime struct {
 	// previous run, but only after the previous run's lifecycle goroutines
 	// have been joined. The execution loop captures them as arguments so it
 	// does not re-read mutable fields while running.
-	currentFiber *fiber.Fiber
-	_            [4]byte // padding to align epoch to 8 bytes on 32-bit
-	epoch        int64 // incremented on each Start
-	runCtx       context.Context
-	runCancel    context.CancelFunc
-	runDetector  *DeadlockDetector
-	runFiberWG   *sync.WaitGroup
+	currentFiber   *fiber.Fiber
+	_              [4]byte // padding to align epoch to 8 bytes on 32-bit
+	epoch          int64   // incremented on each Start
+	runCtx         context.Context
+	runCancel      context.CancelFunc
+	runDetector    *DeadlockDetector
+	runFiberWG     *sync.WaitGroup
 	runLifecycleWG *sync.WaitGroup
 }
 
@@ -722,7 +722,21 @@ func (rt *Runtime) GetAllFibers() []*fiber.Fiber {
 func (rt *Runtime) GetMetrics() metrics.MetricsSnapshot {
 	snap := rt.metrics.GetSnapshot()
 	rt.injectStealStats(&snap)
+	rt.injectActiveCount(&snap)
 	return snap
+}
+
+// injectActiveCount overwrites the ActiveFibers gauge with the authoritative
+// admission counter. metrics.ActiveFibers is maintained by RecordFiberCreated/
+// Completed/Cancelled, whose ordering can drift by a bounded amount in the rare
+// fast-loop-during-Spawn race. activeFiberCount is decremented exactly once per
+// fiber (verified) so it is the exact live count; use it directly.
+func (rt *Runtime) injectActiveCount(snap *metrics.MetricsSnapshot) {
+	n := atomic.LoadInt64(&rt.activeFiberCount)
+	if n < 0 {
+		n = 0
+	}
+	snap.ActiveFibers = n
 }
 
 // GetLifetimeMetrics returns a snapshot where the five monotonic counters
@@ -732,6 +746,7 @@ func (rt *Runtime) GetMetrics() metrics.MetricsSnapshot {
 func (rt *Runtime) GetLifetimeMetrics() metrics.MetricsSnapshot {
 	snap := rt.metrics.GetLifetimeSnapshot()
 	rt.injectStealStats(&snap)
+	rt.injectActiveCount(&snap)
 	return snap
 }
 

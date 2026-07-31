@@ -48,6 +48,11 @@ func TestDetectorFlagsSlotExhaustionDeadlock(t *testing.T) {
 		t.Fatal("detector did not flag the slot-exhaustion deadlock " +
 			"(1 worker, 1 blocked fiber holding the slot, 1 ready fiber that can never run)")
 	}
+
+	// The detected episode must also bump the Prometheus deadlock counter.
+	if got := rt.GetMetrics().TotalDeadlocksDetected; got < 1 {
+		t.Fatalf("TotalDeadlocksDetected = %d after a detected deadlock, want >= 1", got)
+	}
 }
 
 // TestDetectorNoFalsePositiveWithFreeSlot guards against over-firing: when a

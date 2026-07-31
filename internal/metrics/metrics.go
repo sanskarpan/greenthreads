@@ -94,6 +94,9 @@ type Metrics struct {
 
 	// Panic counter (incremented via RecordFiberPanic)
 	TotalFiberPanics int64
+	// Deadlock detection counter (incremented via RecordDeadlockDetected).
+	// Like TotalFiberPanics, never reset, so it is monotonic for Prometheus.
+	TotalDeadlocksDetected int64
 
 	// Timing statistics
 	AverageRunTime  time.Duration
@@ -315,6 +318,19 @@ func (m *Metrics) RecordFiberPanic() {
 	m.mu.Unlock()
 }
 
+// RecordDeadlockDetected increments the deadlock counter. The deadlock detector
+// calls this once per newly-detected deadlock episode (not on every scan). Kept
+// separate from the per-run counters and never reset, so it is monotonic for
+// Prometheus exposition.
+func (m *Metrics) RecordDeadlockDetected() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.TotalDeadlocksDetected++
+	m.mu.Unlock()
+}
+
 // RecordYield records a fiber yield
 func (m *Metrics) RecordYield() {
 	m.mu.Lock()
@@ -376,22 +392,23 @@ func (m *Metrics) snapshotLocked(lifetime bool) MetricsSnapshot {
 		yields += m.resetOffset.yields
 	}
 	return MetricsSnapshot{
-		TotalFibersCreated:   created,
-		TotalFibersCompleted: completed,
-		ActiveFibers:         m.ActiveFibers,
-		BlockedFibers:        m.BlockedFibers,
-		TotalContextSwitches: switches,
-		TotalScheduleCalls:   schedules,
-		TotalYields:          yields,
-		TotalFiberPanics:     m.TotalFiberPanics,
-		AverageRunTime:       m.AverageRunTime,
-		AverageWaitTime:      m.AverageWaitTime,
-		TotalCPUTime:         m.TotalCPUTime,
-		TotalStealAttempts:   m.TotalStealAttempts,
-		TotalStealSuccesses:  m.TotalStealSuccesses,
-		StealSuccessRate:     m.StealSuccessRate,
-		PeakFiberCount:       m.PeakFiberCount,
-		TotalStackMemory:     m.TotalStackMemory,
+		TotalFibersCreated:     created,
+		TotalFibersCompleted:   completed,
+		ActiveFibers:           m.ActiveFibers,
+		BlockedFibers:          m.BlockedFibers,
+		TotalContextSwitches:   switches,
+		TotalScheduleCalls:     schedules,
+		TotalYields:            yields,
+		TotalFiberPanics:       m.TotalFiberPanics,
+		TotalDeadlocksDetected: m.TotalDeadlocksDetected,
+		AverageRunTime:         m.AverageRunTime,
+		AverageWaitTime:        m.AverageWaitTime,
+		TotalCPUTime:           m.TotalCPUTime,
+		TotalStealAttempts:     m.TotalStealAttempts,
+		TotalStealSuccesses:    m.TotalStealSuccesses,
+		StealSuccessRate:       m.StealSuccessRate,
+		PeakFiberCount:         m.PeakFiberCount,
+		TotalStackMemory:       m.TotalStackMemory,
 		Uptime: func() time.Duration {
 			if m.StartTime.IsZero() {
 				return 0
@@ -464,10 +481,12 @@ type MetricsSnapshot struct {
 	TotalYields          int64
 	// TotalFiberPanics counts fibers whose function panicked and was recovered.
 	TotalFiberPanics int64
+	// TotalDeadlocksDetected counts deadlock episodes flagged by the detector.
+	TotalDeadlocksDetected int64
 	// AverageRunTime is the mean CPU time per completed fiber.
 	AverageRunTime time.Duration
 	// AverageWaitTime is reserved for future implementation. Always zero.
-	AverageWaitTime time.Duration
+	AverageWaitTime     time.Duration
 	TotalCPUTime        time.Duration
 	TotalStealAttempts  int64
 	TotalStealSuccesses int64
@@ -605,7 +624,7 @@ func (et *EventTracker) GetRecentEvents(n int) []FiberEvent {
 	result := make([]FiberEvent, n)
 	// Read the n most recent events (from tail going backwards).
 	for i := 0; i < n; i++ {
-		idx := ((et.tail - 1 - i) % et.capacity + et.capacity) % et.capacity
+		idx := ((et.tail-1-i)%et.capacity + et.capacity) % et.capacity
 		result[n-1-i] = et.events[idx]
 	}
 	return result

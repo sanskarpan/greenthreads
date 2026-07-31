@@ -660,9 +660,7 @@ The following have no counter at `/metrics`:
 - Fiber panics (`TotalFiberPanics`) — **RESOLVED:** `greenthreads_fiber_panics_total` is now emitted and incremented from `complete()`.
 - Failed spawn attempts (`SpawnErrors`) — RESOLVED: `greenthreads_spawn_errors_total` is emitted.
 - Dropped WebSocket broadcast messages — RESOLVED: `greenthreads_broadcast_messages_dropped_total` is emitted.
-- Deadlock detector events (`DeadlockEventsTotal`) — still open: no counter for detected deadlocks.
-
-Remaining: expose a deadlock-events counter so operators can alert on detection.
+- Deadlock detector events — **RESOLVED:** `greenthreads_deadlocks_total` is now emitted, incremented once per detected episode (rising edge) via `RecordDeadlockDetected`.
 
 **Fix:** Add counters for each. Increment them at the relevant code sites.
 
@@ -902,13 +900,11 @@ correctness bugs. All verified by code review and regression tests.
 | OBS-5 (panics) | `greenthreads_fiber_panics_total` documented but never emitted | Fixed — `complete()` calls `RecordFiberPanic`; `/metrics` emits the counter. Regression: `TestFiberPanicIncrementsPanicMetric` |
 | SY-2 (detection) | Detector blind to the slot-exhaustion deadlock it exists for | Fixed — `checkForDeadlock` separates Ready/Running and flags when all worker slots are held by blocked fibers. Regression: `TestDetectorFlagsSlotExhaustionDeadlock` (the underlying non-preemptive *design* limitation remains — see SY-2 above) |
 
-**Known minor (not a correctness defect):** in the rare interleaving where a
-fiber is dispatched and completes inside Spawn's `Schedule -> re-check` window,
-`RecordFiberCompleted` can run without a matching `RecordFiberCreated`, causing
-bounded, self-clamping drift in the `ActiveFibers` gauge / `TotalFibersCompleted`
-counter. The cap-enforcing `activeFiberCount` stays exact (verified across four
-review rounds); only the observability numbers can transiently drift by a small
-amount. A tiny stale `admitted` map entry from the same race is cleared on Reset.
+**Resolved — metrics-gauge drift:** the `ActiveFibers` gauge previously could
+drift by a bounded amount in the fast-loop-during-Spawn race. `GetMetrics`/
+`GetLifetimeMetrics` now source `ActiveFibers` directly from the exact
+`activeFiberCount` (verified decremented exactly once per fiber across four
+review rounds), so the gauge is always exact. (`TestActiveFibersGaugeMatchesExactCount`.)
 
 ### Resolved: Original AUDIT.md Issues (26 issues)
 

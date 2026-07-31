@@ -368,7 +368,8 @@ func IsLoopbackAddress(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-	}
+}
+
 // Shutdown stops HTTP serving, runtime admission, client connections, and
 // the update broadcaster within the supplied context. Each phase is bounded
 // by ctx; runtime stop errors do not short-circuit the HTTP/broadcast drain
@@ -544,6 +545,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	// OBS-5: fibers whose function panicked and was recovered by the runtime.
 	// TotalFiberPanics is never reset, so it is monotonic across Stop/Reset.
 	writeMetric("greenthreads_fiber_panics_total", "Total fibers whose function panicked and was recovered.", "counter", m.TotalFiberPanics)
+	// Deadlock episodes flagged by the detector (rising edge). Monotonic.
+	writeMetric("greenthreads_deadlocks_total", "Total deadlock episodes detected by the deadlock detector.", "counter", m.TotalDeadlocksDetected)
 
 	// OBS-5: Web-layer operational counters.
 	writeMetric("greenthreads_spawn_errors_total", "Fiber spawn attempts that returned an error.", "counter", s.spawnErrors.Load())
