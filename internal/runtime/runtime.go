@@ -22,6 +22,11 @@ var (
 	ErrAlreadyRunning     = errors.New("runtime already running")
 	ErrStoppedDuringSpawn = errors.New("runtime stopped during spawn")
 	ErrNilRuntime         = errors.New("nil runtime")
+	// ErrMaxFibersReached is returned by Spawn when the live fiber count is at
+	// the WithMaxFibers cap. It is enforced atomically (a counter CAS), so the
+	// cap holds exactly even under concurrent spawners — callers should test
+	// with errors.Is rather than pre-checking a gauge.
+	ErrMaxFibersReached = errors.New("fiber cap exceeded")
 )
 
 const (
@@ -216,7 +221,7 @@ func (rt *Runtime) Spawn(fn fiber.FiberFunc, name string) (fiber.FiberID, error)
 	newCount := atomic.AddInt64(&rt.activeFiberCount, 1)
 	if rt.maxFibers > 0 && newCount > rt.maxFibers {
 		atomic.AddInt64(&rt.activeFiberCount, -1)
-		return 0, fmt.Errorf("fiber cap exceeded: limit %d", rt.maxFibers)
+		return 0, fmt.Errorf("%w: limit %d", ErrMaxFibersReached, rt.maxFibers)
 	}
 
 	f := fiber.NewFiber(fn, stackSize, name)

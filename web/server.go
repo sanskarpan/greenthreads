@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -771,7 +772,15 @@ func (s *Server) handleInit(conn *websocket.Conn, msg Message) {
 		s.sendError(conn, "unsupported scheduler type")
 		return
 	}
-	newRuntime := goruntime.NewRuntime(sType, numWorkers)
+	// Configure the runtime's atomic fiber cap so the limit is enforced inside
+	// Spawn (a counter CAS) rather than by a racy pre-check in handleSpawn
+	// (SEC-5). This makes MaxFibersPerRuntime hold exactly under concurrent
+	// spawners from multiple WebSocket clients.
+	newRuntime := goruntime.NewRuntimeWithOptions(
+		goruntime.WithSchedulerType(sType),
+		goruntime.WithNumWorkers(numWorkers),
+		goruntime.WithMaxFibers(s.config.MaxFibersPerRuntime),
+	)
 	if err := newRuntime.Start(); err != nil {
 		s.sendError(conn, "failed to start runtime")
 		return
@@ -808,16 +817,10 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 		s.sendError(conn, "runtime not initialized")
 		return
 	}
-	// Cap on concurrently-active fibers (created minus completed), not the
-	// cumulative lifetime count: a long-lived runtime should be able to spawn
-	// indefinitely as old fibers finish.
-	// TODO SEC-5: This check is not atomic with rt.Spawn. The active count can
-	// exceed MaxFibersPerRuntime by at most MaxClients concurrent spawners.
-	// Fix: enforce the cap atomically inside rt.Spawn with a counter CAS.
-	if rt.GetMetrics().ActiveFibers >= s.config.MaxFibersPerRuntime {
-		s.sendError(conn, "fiber limit reached")
-		return
-	}
+	// SEC-5: the fiber cap is enforced atomically inside rt.Spawn (the runtime
+	// was constructed with WithMaxFibers in handleInit), so a concurrent burst
+	// of spawners from multiple clients cannot exceed MaxFibersPerRuntime. The
+	// cap error is mapped below.
 	rawName, _ := msg.Payload["name"].(string)
 	name := strings.TrimSpace(rawName)
 	if name == "" {
@@ -856,7 +859,11 @@ func (s *Server) handleSpawn(conn *websocket.Conn, msg Message) {
 	fiberID, err := rt.Spawn(func() { time.Sleep(time.Duration(duration) * time.Millisecond) }, name)
 	if err != nil {
 		s.spawnErrors.Add(1)
-		s.sendError(conn, "failed to spawn fiber")
+		if errors.Is(err, goruntime.ErrMaxFibersReached) {
+			s.sendError(conn, "fiber limit reached")
+		} else {
+			s.sendError(conn, "failed to spawn fiber")
+		}
 		return
 	}
 	// Apply priority through the scheduler-owned API so the priority heap is

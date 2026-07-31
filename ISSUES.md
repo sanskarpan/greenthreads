@@ -479,7 +479,7 @@ The server validates `Origin` before calling `gorilla/websocket.Upgrader.Upgrade
 
 `GetMetrics().ActiveFibers >= MaxFibersPerRuntime` is checked before `rt.Spawn()`. Between the check and the spawn, another concurrent WebSocket client can also pass the check. With 64 clients, `ActiveFibers` can overshoot `MaxFibersPerRuntime` by up to 64.
 
-**Fix:** Enforce the cap atomically inside `rt.Spawn()` using a compare-and-swap on the active fiber counter.
+**RESOLVED:** `handleInit` now constructs the runtime with `WithMaxFibers(MaxFibersPerRuntime)`, so the cap is enforced atomically inside `Spawn` (an `atomic.AddInt64` check on `activeFiberCount`). The racy web-layer pre-check is removed; `Spawn` returns the `ErrMaxFibersReached` sentinel, which `handleSpawn` maps to "fiber limit reached". Verified under concurrent spawners: `TestMaxFibersCapHoldsUnderConcurrentSpawners` (exactly the cap admits, `-race`).
 
 ---
 
