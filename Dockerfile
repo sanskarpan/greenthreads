@@ -5,7 +5,7 @@
 # then replace the digest below. Dependabot's Docker ecosystem also bumps these.
 
 # golang:1.26-alpine
-FROM golang@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647 AS build
+FROM golang@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
